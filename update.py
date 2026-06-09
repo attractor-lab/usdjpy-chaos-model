@@ -560,7 +560,7 @@ def main():
 
     # バックテスト最適化（毎回実行）
     print("バックテスト最適化中...")
-    BT_N = 150
+    BT_N = 200
     weights, bt_stats = backtest_optimize(prices, momentum, regimes, n_bt=BT_N)
     print(f"最適重み: chaos={weights['chaos']:.1f} ar={weights['ar']:.1f} mom={weights['momentum']:.1f}")
     print(f"RMSE: chaos={bt_stats['chaos']['rmse']:.4f} ar={bt_stats['ar']['rmse']:.4f} ens={bt_stats['ensemble']['rmse']:.4f}")
