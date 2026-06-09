@@ -272,7 +272,7 @@ def generate_html(payload):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>USD/JPY カオス予測モデル</title>
+<title>Chaos</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
@@ -326,7 +326,7 @@ tr:hover td{{background:var(--bg3)}}
 <div class="wrap">
 <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;flex-wrap:wrap;gap:8px">
   <div>
-    <h1>Chaos</h1>
+    <h1>カオス理論アンサンブル予測モデル</h1>
     <div class="sub">レジーム検出 + 予測分布 + 自動最適化アンサンブル | データ: {payload['last_date']}</div>
   </div>
   <div id="rbadge" class="badge r{payload['current_regime']}"><span class="dot"></span><span id="rlabel"></span></div>
