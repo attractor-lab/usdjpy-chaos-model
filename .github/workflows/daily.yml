@@ -2,8 +2,8 @@ name: Daily Model Update
 
 on:
   schedule:
-    # 日本時間：毎週月〜金の朝9:00（UTC 0:00）に自動実行
-    - cron: '0 0 * * 1-6'
+    # 日本時間：毎週月〜金の朝9:07（UTC 0:07）に自動実行
+    - cron: '7 0 * * 1-5'
   workflow_dispatch:
 
 permissions:
