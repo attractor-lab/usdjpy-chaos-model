@@ -1,4 +1,5 @@
 """
+ORBIT — Regime-Adaptive Analog Ensemble (Attractor Co., Ltd.)
 USD/JPY アンサンブル予測モデル v3 — 方法論改善版
 
 v2からの主な改善(すべて日次自動更新の運用前提を維持):
@@ -35,8 +36,11 @@ W_VOLMED   = 252    # レジーム判定ボラ中央値のローリング窓
 SEL_N      = 150    # 重み選択窓(walk-forward)
 EVAL_N     = 250    # OOS評価窓
 HORIZONS   = 5      # 予測ホライズン(日)
-COST_HALF  = 0.0015 # 片道コスト(円) ≈ スプレッド0.3pips相当の半分
-PNL_THRESH = 0.02   # 予測変化がこの閾値(円)未満なら見送り
+PIP_JPY      = 0.01                       # USD/JPY の 1pip
+SPREAD_PIPS  = 0.2                        # 実質往復コスト(pips)
+COST_ONEWAY  = SPREAD_PIPS * PIP_JPY / 2  # 片道コスト(円/USD) = 0.001
+NOTIONAL_YEN = 1_000_000                  # PnL想定元本(円)
+PNL_THRESH   = 0.02   # 予測変化がこの閾値(円)未満なら見送り
 MIN_PRICE, MAX_PRICE = 50.0, 400.0  # データ健全性チェック
 
 REGIME_NAMES = ["Low Vol Range", "High Vol Range",
@@ -444,7 +448,10 @@ def coverage_check(ens_err, eval_idxs, holdout=60):
 # 7. スプレッド込みPnLバックテスト
 # ============================================================
 def pnl_backtest(prices, ens_pred, eval_idxs):
-    """1日先予測の符号でポジション。コストはポジション変更時に発生。"""
+    """
+    1日先予測の符号でポジション。想定元本100万円の円建てPnL。
+    保有USD数量 = 100万円 / その日の価格。コストはポジション変更時に発生。
+    """
     N = len(prices)
     pos_prev, pnls, trades, hits, recs = 0, [], 0, [], []
     for idx in eval_idxs:
@@ -452,14 +459,15 @@ def pnl_backtest(prices, ens_pred, eval_idxs):
             continue
         edge = ens_pred[0, idx] - prices[idx]
         pos = 0 if abs(edge) < PNL_THRESH else (1 if edge > 0 else -1)
+        units = NOTIONAL_YEN / prices[idx]  # 保有USD数量
         dp = prices[idx + 1] - prices[idx]
-        cost = COST_HALF * abs(pos - pos_prev)
-        pnl = pos * dp - cost
+        cost = COST_ONEWAY * abs(pos - pos_prev) * units
+        pnl = pos * units * dp - cost
         pnls.append(pnl)
         if pos != 0:
             trades += 1
             hits.append(1 if pos * dp > 0 else 0)
-        recs.append({"i": idx, "pnl": round(float(pnl), 4)})
+        recs.append({"i": idx, "pnl": round(float(pnl), 1)})
         pos_prev = pos
     pnls = np.array(pnls)
     if len(pnls) == 0:
@@ -467,14 +475,15 @@ def pnl_backtest(prices, ens_pred, eval_idxs):
     cum = np.cumsum(pnls)
     sharpe = float(pnls.mean() / (pnls.std() + 1e-12) * math.sqrt(252))
     summary = {
-        "total":    round(float(cum[-1]), 4),
-        "sharpe":   round(sharpe, 3),
-        "hit":      round(float(np.mean(hits)), 4) if hits else None,
-        "n_days":   int(len(pnls)),
-        "n_trades": int(trades),
-        "max_dd":   round(float(np.max(np.maximum.accumulate(cum) - cum)), 4),
-        "cost":     COST_HALF,
-        "thresh":   PNL_THRESH,
+        "total":     round(float(cum[-1])),
+        "sharpe":    round(sharpe, 3),
+        "hit":       round(float(np.mean(hits)), 4) if hits else None,
+        "n_days":    int(len(pnls)),
+        "n_trades":  int(trades),
+        "max_dd":    round(float(np.max(np.maximum.accumulate(cum) - cum))),
+        "cost_pips": SPREAD_PIPS,
+        "notional":  NOTIONAL_YEN,
+        "thresh":    PNL_THRESH,
     }
     return summary, recs
 
@@ -485,7 +494,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>USD/JPY Ensemble v3</title>
+<title>ORBIT v3 — Attractor Co., Ltd.</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -552,8 +561,9 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 
 <div class="hdr">
   <div class="hdr-l">
-    <h1>USD / JPY &nbsp;&middot;&nbsp; Ensemble v3</h1>
+    <h1>ORBIT &nbsp;&middot;&nbsp; Regime-Adaptive Analog Ensemble</h1>
     <div class="sub">Causal Features &middot; Walk-Forward OOS &middot; Conformal Intervals &middot; vs Random Walk</div>
+    <div class="sub" style="color:var(--cyan);opacity:.7;margin-top:2px">Attractor Co., Ltd.</div>
   </div>
   <div class="hdr-r">
     <div class="hdr-price" id="hprice">&mdash;</div>
@@ -562,7 +572,7 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
   </div>
 </div>
 
-<div class="warn">&#9888; RESEARCH PURPOSE ONLY &mdash; NOT FOR ACTUAL TRADING. 全性能指標は完全アウトオブサンプル(walk-forward)です。</div>
+<div class="warn">&#9888; 研究・学習目的のモデルです。実際の取引判断には使用しないでください。全性能指標は完全アウトオブサンプル(walk-forward)です。</div>
 
 <div class="mstrip" id="mstrip"></div>
 
@@ -650,7 +660,7 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 <!-- TAB 3: PNL -->
 <div class="pn" id="p3">
   <div class="card">
-    <div class="card-t">Cost-Adjusted PnL Simulation &mdash; OOS (1-day signal)</div>
+    <div class="card-t">Cost-Adjusted PnL Simulation &mdash; OOS (1-day signal, &yen;1,000,000 notional)</div>
     <div class="mstrip" id="pnlstrip" style="margin-bottom:14px"></div>
     <div class="cw h240"><canvas id="c3p"></canvas></div>
     <div class="note" id="pnlnote"></div>
@@ -678,6 +688,7 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 </div>
 
 <div class="foot">
+  &copy; Attractor Co., Ltd. &nbsp;|&nbsp;
   Generated: __GENERATED_AT__ &nbsp;|&nbsp; Source: __SOURCE__ &nbsp;|&nbsp;
   Auto-update: Mon&ndash;Fri 09:00 JST &nbsp;|&nbsp; GitHub Actions
 </div>
@@ -909,29 +920,34 @@ new Chart(document.getElementById('c2b'),{
 // ---- TAB 3: PNL ----
 const P=D.pnl;
 if(P){
+  // 円表記: 符号 + ¥ + 3桁区切り (例: +¥12,345 / -¥3,210)
+  const fmtY=(v,sign)=>(sign?(v>=0?'+':'-'):(v<0?'-':''))+'¥'+Math.round(Math.abs(v)).toLocaleString('ja-JP');
   const pData=[
-    {l:'Total PnL',v:(P.total>=0?'+':'')+P.total.toFixed(2)+'¥',s:'per 1 USD notional',c:P.total>=0?'green':'red'},
+    {l:'Total PnL',v:fmtY(P.total,true),s:'per ¥1,000,000 notional',c:P.total>=0?'green':'red'},
     {l:'Sharpe (Ann.)',v:P.sharpe.toFixed(2),s:'cost-adjusted',c:P.sharpe>0?'green':'red'},
     {l:'Hit Rate',v:P.hit!=null?(P.hit*100).toFixed(1)+'%':'—',s:P.n_trades+' trades / '+P.n_days+' days',c:'blue'},
-    {l:'Max Drawdown',v:P.max_dd.toFixed(2)+'¥',s:'cumulative',c:'amber'},
+    {l:'Max Drawdown',v:fmtY(P.max_dd,false),s:'cumulative (JPY)',c:'amber'},
   ];
   document.getElementById('pnlstrip').innerHTML=pData.map(m=>
     `<div class="mc"><div class="mc-l">${m.l}</div><div class="mc-v" style="color:var(--${m.c})">${m.v}</div><div class="mc-s">${m.s}</div></div>`
   ).join('');
   let cum=0;
-  const cumData=D.pnl_series.map(r=>{cum+=r.pnl;return +cum.toFixed(3);});
+  const cumData=D.pnl_series.map(r=>{cum+=r.pnl;return Math.round(cum);});
   new Chart(document.getElementById('c3p'),{
     type:'line',
     data:{labels:D.pnl_series.map(r=>r.date.slice(5)),datasets:[
       {data:cumData,borderColor:'#00ff88',borderWidth:1.5,pointRadius:0,fill:true,backgroundColor:'rgba(0,255,136,.06)',tension:.1}
     ]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>'累積PnL: '+fmtY(ctx.parsed.y,true)}}},
       scales:{x:{grid:{color:'rgba(30,45,69,.3)'},ticks:{color:'#556688',maxTicksLimit:10}},
-        y:{grid:{color:'rgba(30,45,69,.3)'},ticks:{color:'#8899bb',callback:v=>v.toFixed(1)+'¥'}}}
+        y:{grid:{color:'rgba(30,45,69,.3)'},ticks:{color:'#8899bb',callback:v=>fmtY(v,false)},
+          title:{display:true,text:'Cumulative PnL (JPY)',color:'#556688',font:{size:10}}}}
     }
   });
   document.getElementById('pnlnote').textContent=
-    `前提: 片道コスト${P.cost}円、予測変化が${P.thresh}円未満の日は見送り。スリッパージ・金利差調整は未考慮の簡易検証。`;
+    `前提: 想定元本¥1,000,000(保有USD数量=元本÷当日価格)、往復スプレッド${P.cost_pips}pips、`+
+    `予測変化が${P.thresh}円未満の日は見送り。PnLはすべて円建て。スリッページ・スワップ(金利差)は未考慮の簡易検証。`;
 }
 
 // ---- TAB 4 ----
@@ -1057,7 +1073,7 @@ def main():
     # PnL
     pnl_summary, pnl_recs = pnl_backtest(prices, ens_pred, eval_idxs)
     if pnl_summary:
-        print(f"PnL(OOS, cost込): total={pnl_summary['total']:+.2f}円 "
+        print(f"PnL(OOS, 元本100万円, cost込): total={pnl_summary['total']:+,}円 "
               f"Sharpe={pnl_summary['sharpe']:.2f} hit={pnl_summary['hit']}")
 
     # 本番予測(今日)
@@ -1147,7 +1163,8 @@ def main():
             "weight selection window": f"{SEL_N}d (walk-forward)",
             "OOS evaluation window": f"{EVAL_N}d",
             "intervals": "conformal (OOS residual quantiles)",
-            "cost assumption": f"{COST_HALF} JPY one-way",
+            "PnL notional": "¥1,000,000",
+            "cost assumption": f"{SPREAD_PIPS} pips round-trip",
         },
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
