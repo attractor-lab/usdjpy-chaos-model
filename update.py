@@ -388,7 +388,7 @@ tr:hover td{{background:var(--bg3)}}
     <div class="cw h200"><canvas id="c3"></canvas></div>
   </div>
 </div>
-<div class="upd">自動更新: 毎週月〜金 日本時間 翌9時 | GitHub Actions + yfinance</div>
+<div class="upd">自動更新: 毎週月〜金 日本時間 翌9時頃 | GitHub Actions + yfinance</div>
 </div>
 <script>
 const D={payload_json};
