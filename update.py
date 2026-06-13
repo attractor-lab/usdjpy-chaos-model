@@ -19,6 +19,13 @@ v2からの主な改善(すべて日次自動更新の運用前提を維持):
   8. 埋め込み遅延τを自己相関ゼロ交差から日次推定
   9. 上昇確率をOOS残差分布ベースに変更(15近傍の投票 → 250サンプル)
 
+v3.1 追加:
+  - 重み選択を指数減衰加重(半減期60日)に変更。レジーム遷移への追従を高速化
+  - 金利差(^IRX − JPY_RATE)の因果zスコアを埋め込みに追加(キャリーの源泉)
+  - VIXの因果zスコアを埋め込みに追加 + VIXスパイク日をUnstableに強制分類
+    (リスクオフ→円キャリー巻き戻しの経路。水準ではなく急変を検出)
+  - マクロ次元はMACRO_DIM_SCALEで縮小し、k-NN距離は価格形状を主とする
+
 依存: numpy yfinance
 """
 
@@ -48,6 +55,13 @@ PNL_THRESH   = 0.02   # 予測変化がこの閾値(円)未満なら見送り
 JPY_RATE          = 0.005  # JPY短期金利(無担保コールON相当)。政策変更時はここを更新
 USD_RATE_FALLBACK = 0.04   # ^IRX取得失敗時のフォールバック
 SWAP_HAIRCUT_PIPS = 0.2    # 業者取り分(pips/日、保有中は常に控除)
+
+# --- v3.1: 外部マクロ特徴量 + 指数加重重み選択 ---
+EWMA_HALFLIFE   = 60    # 重み選択窓の指数減衰半減期(日)。直近誤差ほど重視
+VIX_FALLBACK    = 20.0  # ^VIX取得失敗時のフォールバック(特徴量はゼロ化され無害)
+VIX_SPIKE_Z     = 2.0   # リスクオフ判定: VIX対数zスコア閾値
+VIX_SPIKE_CHG   = 0.25  # リスクオフ判定: VIX 5日対数変化閾値
+MACRO_DIM_SCALE = 0.7   # 埋め込み内の金利/VIX次元のスケール(価格形状を主、マクロを従に)
 MIN_PRICE, MAX_PRICE = 50.0, 400.0  # データ健全性チェック
 
 REGIME_NAMES = ["Low Vol Range", "High Vol Range",
@@ -89,30 +103,37 @@ def fetch_usdjpy_stooq():
     print(f"[OK] stooq: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
     return dates, closes
 
-def fetch_usd_rate(dates):
+def _fetch_yf_series(ticker, dates, fallback, scale=1.0, label=""):
     """
-    USD短期金利プロキシ(^IRX: 13週T-Bill利回り)を価格系列の日付に前方補完で整列。
-    取得失敗時は定数フォールバック(自動更新を止めない)。
+    yfinanceから補助系列を取得し、価格系列の日付に前方補完で整列(因果)。
+    取得失敗時は定数フォールバック(自動更新を止めない。zスコア特徴量はゼロ化され無害)。
     """
     try:
         import yfinance as yf
-        df = yf.download("^IRX", period="10y", interval="1d",
+        df = yf.download(ticker, period="10y", interval="1d",
                          progress=False, auto_adjust=True)
         vals = df["Close"].values.flatten()
-        ser = {d.strftime("%Y/%m/%d"): float(v) / 100.0
+        ser = {d.strftime("%Y/%m/%d"): float(v) * scale
                for d, v in zip(df.index, vals) if np.isfinite(v)}
         if not ser:
             raise ValueError("empty")
-        out, last = [], USD_RATE_FALLBACK
+        out, last = [], float(fallback)
         for d in dates:
             if d in ser:
                 last = ser[d]
             out.append(last)
-        print(f"[OK] ^IRX: USD短期金利 {out[-1]*100:.2f}%")
-        return np.array(out), "^IRX (13w T-bill)"
+        print(f"[OK] {ticker}: {label} 最新 {out[-1]:.4g}")
+        return np.array(out), ticker
     except Exception as e:
-        print(f"[WARN] ^IRX取得失敗: {e} → 定数{USD_RATE_FALLBACK*100:.1f}%使用")
-        return np.full(len(dates), USD_RATE_FALLBACK), f"constant {USD_RATE_FALLBACK*100:.1f}%"
+        print(f"[WARN] {ticker}取得失敗: {e} → 定数{fallback}使用")
+        return np.full(len(dates), float(fallback)), f"constant {fallback}"
+
+def fetch_usd_rate(dates):
+    return _fetch_yf_series("^IRX", dates, USD_RATE_FALLBACK,
+                            scale=0.01, label="USD短期金利")
+
+def fetch_vix(dates):
+    return _fetch_yf_series("^VIX", dates, VIX_FALLBACK, label="VIX")
 
 def _sanity_check(closes):
     """価格レンジと日次変化の健全性チェック(ソース混在・異常値の検出)"""
@@ -205,12 +226,18 @@ def rolling_median(x, w=W_VOLMED, min_p=60):
         out[i] = np.median(x[lo:i + 1])
     return out
 
-def classify_regime(rv, adx, pdi, mdi, hurst):
-    """5分類レジーム。ボラ閾値は因果ローリング中央値(v2は全期間percentileでリーク)"""
+def classify_regime(rv, adx, pdi, mdi, hurst, risk_off=None):
+    """
+    5分類レジーム。ボラ閾値は因果ローリング中央値(v2は全期間percentileでリーク)。
+    risk_off: VIXスパイク等のリスクオフ日はUnstableに強制分類(キャリー巻き戻し局面)
+    """
     N = len(rv)
     vol_med = rolling_median(rv)
     regimes = np.zeros(N, dtype=int)
     for i in range(N):
+        if risk_off is not None and risk_off[i]:
+            regimes[i] = 4
+            continue
         trending = adx[i] > 25 and hurst[i] > 0.55
         high_vol = rv[i] > vol_med[i] * 1.5
         if trending and pdi[i] > mdi[i]:
@@ -249,14 +276,19 @@ def estimate_tau(x, max_lag=60, lo=5, hi=40, default=20):
             return int(np.clip(lag, lo, hi))
     return default
 
-def build_embedding(pn, mn, vn, tau, dim=DIM):
+def build_embedding(pn, mn, vn, tau, dim=DIM, extra=None):
     """
-    5次元拡張状態ベクトル: [pn(t), pn(t-τ), pn(t-2τ), mn(t), vn(t)]
+    拡張状態ベクトル: [pn(t), pn(t-τ), pn(t-2τ), mn(t), vn(t)] + マクロ次元
+    extra: 追加特徴量(因果zスコア済み)のリスト。MACRO_DIM_SCALEで縮小して
+           価格形状を主・マクロを従とする距離構造を保つ。
     Xe[t] は価格インデックス offset+t に対応(過去方向の遅延なので完全に因果)
     """
     offset = (dim - 1) * tau
     idxs = np.arange(offset, len(pn))
     cols = [pn[idxs - j * tau] for j in range(dim)] + [mn[idxs], vn[idxs]]
+    if extra is not None:
+        for x in extra:
+            cols.append(MACRO_DIM_SCALE * x[idxs])
     return np.column_stack(cols), offset
 
 # ============================================================
@@ -375,14 +407,22 @@ def walk_forward(prices, Xe, regimes, offset):
     return preds, errs, start
 
 def select_weights(errs, idx, sel_n=SEL_N):
-    """idxより前のsel_n日の1日先誤差のみで重みをグリッドサーチ(RMSE最小)"""
+    """
+    idxより前のsel_n日の1日先誤差のみで重みをグリッドサーチ。
+    誤差は指数減衰加重(半減期EWMA_HALFLIFE日)で直近を重視し、
+    レジーム遷移への追従を速くする(均等加重より低分散な動的更新)。
+    """
     win = np.array([errs[m][0, idx - sel_n:idx] for m in MODEL_KEYS])
     valid = ~np.isnan(win).any(axis=0)
     win = win[:, valid]
-    if win.shape[1] < 30:
+    n = win.shape[1]
+    if n < 30:
         return np.array([0.0, 0.0, 0.0, 1.0]), None
+    ages = np.arange(n - 1, -1, -1)            # 列は古→新、最新の age=0
+    decay = 0.5 ** (ages / EWMA_HALFLIFE)
+    decay /= decay.sum()
     comb_err = COMBOS @ win
-    rmse = np.sqrt((comb_err ** 2).mean(axis=1))
+    rmse = np.sqrt(((comb_err ** 2) * decay).sum(axis=1))
     i = int(np.argmin(rmse))
     return COMBOS[i], float(rmse[i])
 
@@ -1082,20 +1122,33 @@ def main():
     dates, prices, source = fetch_usdjpy()
     N = len(prices)
 
+    # 外部マクロ系列(金利・VIX)。失敗時フォールバックで自動更新は止まらない
+    r_usd, rate_source = fetch_usd_rate(dates)
+    vix, vix_source = fetch_vix(dates)
+
     print("特徴量計算中(全て因果)...")
     rv  = rolling_vol(prices)
     adx, pdi, mdi = calc_adx(prices)
     hurst = calc_hurst(prices)
     mom   = calc_momentum(prices)
-    regimes, vol_med = classify_regime(rv, adx, pdi, mdi, hurst)
+
+    # VIXリスクオフ判定(水準ではなく急変を見る): zスコア超過 or 5日対数変化超過
+    log_vix = np.log(np.maximum(vix, 1e-6))
+    vz = rolling_zscore(log_vix)
+    vix_chg5 = np.concatenate([np.zeros(5), log_vix[5:] - log_vix[:-5]])
+    risk_off = (vz > VIX_SPIKE_Z) | (vix_chg5 > VIX_SPIKE_CHG)
+    print(f"リスクオフ日数(VIXスパイク): {int(risk_off.sum())} / {N}")
+
+    regimes, vol_med = classify_regime(rv, adx, pdi, mdi, hurst, risk_off=risk_off)
     trans = calc_transition_prob(regimes)
 
     pn = rolling_zscore(prices)
     mn = rolling_zscore(mom)
     vn = rolling_zscore(rv)
+    rn = rolling_zscore(r_usd - JPY_RATE)  # 金利差(USDキャリーの源泉)の因果zスコア
     tau = estimate_tau(pn)
-    Xe, offset = build_embedding(pn, mn, vn, tau)
-    print(f"τ={tau} (ACFゼロ交差) | 埋め込み次元=5 | offset={offset}")
+    Xe, offset = build_embedding(pn, mn, vn, tau, extra=[rn, vz])
+    print(f"τ={tau} (ACFゼロ交差) | 埋め込み次元={Xe.shape[1]} (5 + 金利差 + VIX) | offset={offset}")
 
     cur_r = int(regimes[-1])
     print(f"Regime: {REGIME_NAMES[cur_r]} | Vol: {rv[-1]*100:.2f}% | "
@@ -1144,7 +1197,6 @@ def main():
     # PnL(スワップ込み、ラグ0=本体 + ラグ1=執行感応度テスト)
     from datetime import datetime as _dt
     dates_dt = [_dt.strptime(d, "%Y/%m/%d") for d in dates]
-    r_usd, rate_source = fetch_usd_rate(dates)
     pnl_summary, pnl_recs = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0)
     pnl_lag1, pnl_recs_l1 = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=1)
     if pnl_summary:
@@ -1248,11 +1300,12 @@ def main():
         "weights_history": weights_history,
         "config": {
             "tau (ACF zero-cross)": tau,
-            "embedding dim": "3 delay + momentum + vol (5d)",
+            "embedding dim": f"3 delay + momentum + vol + rate diff + VIX ({Xe.shape[1]}d, macro×{MACRO_DIM_SCALE})",
             "k-NN": K_NN,
             "normalization": f"causal rolling z-score ({W_NORM}d)",
             "regime vol threshold": f"causal rolling median ({W_VOLMED}d)",
-            "weight selection window": f"{SEL_N}d (walk-forward)",
+            "risk-off rule": f"VIX z>{VIX_SPIKE_Z} or 5d log-chg>{VIX_SPIKE_CHG} → Unstable ({vix_source})",
+            "weight selection window": f"{SEL_N}d walk-forward, EWMA halflife {EWMA_HALFLIFE}d",
             "OOS evaluation window": f"{EVAL_N}d",
             "intervals": "conformal (OOS residual quantiles)",
             "PnL notional": "¥1,000,000",
