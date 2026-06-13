@@ -24,7 +24,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install numpy scipy yfinance
+        run: pip install numpy scipy yfinance pandas cot-reports
 
       - name: Run model
         run: python update.py
