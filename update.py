@@ -59,8 +59,8 @@ SWAP_HAIRCUT_PIPS = 0.2    # 業者取り分(pips/日、保有中は常に控除
 # --- v3.1: 外部マクロ特徴量 + 指数加重重み選択 ---
 # ablationトグル: `python update.py --ablation` で4通り(±EWMA × ±MACRO)を
 # 同一データ・同一評価窓で一括比較し、要因分解する
-USE_EWMA        = True  # False = v3.0の均等加重に戻す
-USE_MACRO       = True  # False = 金利/VIX特徴量とリスクオフ判定を無効化(v3.0相当)
+USE_EWMA        = False  # False = v3.0の均等加重に戻す
+USE_MACRO       = False  # False = 金利/VIX特徴量とリスクオフ判定を無効化(v3.0相当)
 EWMA_HALFLIFE   = 60    # 重み選択窓の指数減衰半減期(日)。直近誤差ほど重視
 VIX_FALLBACK    = 20.0  # ^VIX取得失敗時のフォールバック(特徴量はゼロ化され無害)
 VIX_SPIKE_Z     = 2.0   # リスクオフ判定: VIX対数zスコア閾値
@@ -1471,13 +1471,18 @@ def run_ablation():
         f.write(report + "\n")
     # ダッシュボードのAblationタブが読むJSON
     with open("docs/ablation.json", "w", encoding="utf-8") as f:
+        def _to_native(v):
+            if isinstance(v, (float, np.floating)):
+                return float(round(float(v), 4))
+            if isinstance(v, (int, np.integer)):
+                return int(v)
+            return v
         json.dump({
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "source": source,
             "period": f"{dates[0]} ~ {dates[-1]}",
             "eval_n": EVAL_N,
-            "rows": [{k: (round(v, 4) if isinstance(v, float) else v)
-                      for k, v in r.items()} for r in rows],
+            "rows": [{k: _to_native(v) for k, v in r.items()} for r in rows],
         }, f, ensure_ascii=False)
     print("[OK] docs/ablation.txt / docs/ablation.json に保存")
 
