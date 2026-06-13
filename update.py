@@ -165,55 +165,93 @@ def fetch_cot_jpy(dates):
     """
     CFTC COT Legacy Futures — CME JPY大口投機筋ネットポジション(枚)。
     週次(火曜基準、金曜公表)を日次に前方補完。3〜8日のラグあり。
-    取得失敗時はゼロ(中立扱い)で自動更新は止まらない。
+
+    取得優先順位:
+      1. CFTC Socrata Public API (publicreporting.cftc.gov) — REST/JSON、最も安定
+      2. CFTC ZIP per year (www.cftc.gov) — SSL無効化で接続
+      3. ゼロフォールバック(中立扱い) — 自動更新は止めない
     """
-    import urllib.request, csv
+    import urllib.request, urllib.parse, json, csv, ssl
     from datetime import datetime as _dt
 
-    start_year = int(dates[0][:4]) if dates else 2016
-    end_year   = int(dates[-1][:4]) if dates else 2026
+    # SSL証明書検証を無効化(CFTC/GitHub Actions環境での証明書エラー回避)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode   = ssl.CERT_NONE
+
     weekly = {}
 
-    for year in range(start_year, end_year + 1):
-        url = (f"https://www.cftc.gov/sites/default/files/files/dea/"
-               f"cotarchives/{year}/futures/deacmesf.zip")
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = resp.read()
-            zf = zipfile.ZipFile(io.BytesIO(data))
-            text = zf.open(zf.namelist()[0]).read().decode("latin-1")
-            count = 0
-            for row in csv.reader(io.StringIO(text)):
-                if len(row) < 5 or "JAPANESE YEN" not in row[0].upper():
-                    continue
-                try:
-                    ds = row[1].strip()          # YYMMDD形式
-                    yr = int(ds[:2]); yr = (2000 + yr if yr < 50 else 1900 + yr)
-                    d  = _dt(yr, int(ds[2:4]), int(ds[4:6]))
-                    key = d.strftime("%Y/%m/%d")
-                    net = float(row[3].replace(",", "")) - float(row[4].replace(",", ""))
-                    weekly[key] = net
-                    count += 1
-                except Exception:
-                    continue
-            if count:
-                print(f"[OK] COT {year}: {count} 件")
-        except Exception as e:
-            print(f"[WARN] COT {year}: {e}")
+    # --- 1. Socrata Public API (プライマリ) ---
+    try:
+        params = urllib.parse.urlencode({
+            "$where": "market_and_exchange_names='JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE'",
+            "$limit":  "600",
+            "$order":  "report_date_as_mm_dd_yyyy DESC",
+        })
+        url = f"https://publicreporting.cftc.gov/resource/6dca-aqww.json?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=25, context=ctx) as resp:
+            rows = json.loads(resp.read().decode("utf-8"))
+        for row in rows:
+            try:
+                ds  = row.get("report_date_as_mm_dd_yyyy", "")  # "MM/DD/YYYY"
+                d   = _dt.strptime(ds, "%m/%d/%Y")
+                key = d.strftime("%Y/%m/%d")
+                net = float(row["noncomm_positions_long_all"]) \
+                    - float(row["noncomm_positions_short_all"])
+                weekly[key] = net
+            except Exception:
+                continue
+        if weekly:
+            print(f"[OK] COT (Socrata): {len(weekly)} 件, 最新 {max(weekly)} {list(weekly.values())[0]:,.0f}枚")
+    except Exception as e:
+        print(f"[WARN] COT Socrata失敗: {e}")
 
+    # --- 2. ZIP per year (フォールバック) ---
+    if not weekly:
+        start_year = int(dates[0][:4]) if dates else 2016
+        end_year   = int(dates[-1][:4]) if dates else 2026
+        for year in range(start_year, end_year + 1):
+            url = (f"https://www.cftc.gov/sites/default/files/files/dea/"
+                   f"cotarchives/{year}/futures/deacmesf.zip")
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=25, context=ctx) as resp:
+                    data = resp.read()
+                zf = zipfile.ZipFile(io.BytesIO(data))
+                text = zf.open(zf.namelist()[0]).read().decode("latin-1")
+                count = 0
+                for row in csv.reader(io.StringIO(text)):
+                    if len(row) < 5 or "JAPANESE YEN" not in row[0].upper():
+                        continue
+                    try:
+                        ds = row[1].strip()   # YYMMDD形式
+                        yr = int(ds[:2]); yr = (2000 + yr if yr < 50 else 1900 + yr)
+                        d  = _dt(yr, int(ds[2:4]), int(ds[4:6]))
+                        key = d.strftime("%Y/%m/%d")
+                        net = float(row[3].replace(",","")) - float(row[4].replace(",",""))
+                        weekly[key] = net; count += 1
+                    except Exception:
+                        continue
+                if count:
+                    print(f"[OK] COT ZIP {year}: {count} 件")
+            except Exception as e:
+                print(f"[WARN] COT ZIP {year}: {e}")
+
+    # --- 3. ゼロフォールバック ---
     if not weekly:
         print("[WARN] COT全取得失敗 → ゼロ補完(中立)")
         return np.zeros(len(dates)), "fallback(0)"
 
+    # 日次に前方補完
     out, last = [], 0.0
     for d in dates:
         if d in weekly:
             last = weekly[d]
         out.append(last)
     net_arr = np.array(out)
-    print(f"[OK] COT JPY ネット: 最新 {net_arr[-1]:,.0f} 枚")
-    return net_arr, "CFTC"
+    print(f"[OK] COT JPY ネット最新: {net_arr[-1]:,.0f} 枚")
+    return net_arr, "CFTC/Socrata"
 
 def _sanity_check(closes):
     """価格レンジと日次変化の健全性チェック(ソース混在・異常値の検出)"""
@@ -1211,7 +1249,7 @@ if(ML){
       plugins:{legend:{labels:{color:'#8899bb',font:{size:10},boxWidth:10}}},
       scales:{
         x:{grid:{color:'rgba(30,45,69,.3)'},ticks:{color:'#556688',maxTicksLimit:10}},
-        y:{min:-1.2,max:1.2,grid:{color:'rgba(30,45,69,.3)'},ticks:{color:'#8899bb'},
+        y:{grid:{color:'rgba(30,45,69,.3)'},ticks:{color:'#8899bb'},
           title:{display:true,text:'Score',color:'#556688',font:{size:10}}}
       }
     }
