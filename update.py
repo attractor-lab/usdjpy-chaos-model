@@ -59,6 +59,7 @@ SWAP_HAIRCUT_PIPS = 0.2    # 業者取り分(pips/日、保有中は常に控除
 # --- v3.1: 外部マクロ特徴量 + 指数加重重み選択 ---
 # ablationトグル: `python update.py --ablation` で4通り(±EWMA × ±MACRO)を
 # 同一データ・同一評価窓で一括比較し、要因分解する
+PUBLIC_BUILD    = False  # True = upgrade.py経由で外部公開版を生成(Configuration非表示)
 USE_EWMA        = False  # False = v3.0の均等加重に戻す
 USE_MACRO       = False  # False = 金利/VIX特徴量とリスクオフ判定を無効化(v3.0相当)
 EWMA_HALFLIFE   = 60    # 重み選択窓の指数減衰半減期(日)。直近誤差ほど重視
@@ -1819,17 +1820,11 @@ def main():
 
     os.makedirs("docs", exist_ok=True)
 
-    # 通常版 (全パラメーター含む)
-    html = generate_html(payload, source, public=False)
+    html = generate_html(payload, source, public=PUBLIC_BUILD)
     with open("docs/index.html", "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"[OK] docs/index.html {len(html):,} bytes")
-
-    # 外部公開版 (Configuration非表示)
-    html_pub = generate_html(payload, source, public=True)
-    with open("docs/index_public.html", "w", encoding="utf-8") as f:
-        f.write(html_pub)
-    print(f"[OK] docs/index_public.html {len(html_pub):,} bytes")
+    mode = "public (Configuration非表示)" if PUBLIC_BUILD else "full (全情報)"
+    print(f"[OK] docs/index.html [{mode}] {len(html):,} bytes")
 
     print("=== Done ===")
 
