@@ -1192,12 +1192,11 @@ if(ML){
   const dir = sc > ML.neutral_band ? 'USD/JPY 上昇バイアス' : sc < -ML.neutral_band ? 'USD/JPY 下落バイアス' : '中立ゾーン';
   const col = sc > ML.neutral_band ? 'green' : sc < -ML.neutral_band ? 'red' : 'amber';
   const mItems=[
-    {l:'Macro Score',   v: sc.toFixed(2),                s: dir,                   c: col},
-    {l:'10Y Spread Mom',v: ML.spread_sig.toFixed(2),     s: `${SPREAD_MOM_DAYS}日モメンタム z-score`,c: ML.spread_sig>=0?'green':'red'},
-    {l:'COT Signal',    v: ML.cot_sig.toFixed(2),        s: 'JPYネット変化 (4週)',  c: ML.cot_sig>=0?'green':'red'},
-    {l:'Month-end Flow',v: ML.monthend_sig.toFixed(2),   s: '月末リバランス圧力',   c: ML.monthend_sig>=0?'green':'red'},
+    {l:'Macro Score',   v: sc.toFixed(2),              s: dir,                           c: col},
+    {l:'10Y Spread Mom',v: ML.spread_sig.toFixed(2),   s: '20日スプレッドモメンタム z-score', c: ML.spread_sig>=0?'green':'red'},
+    {l:'COT Signal',    v: ML.cot_sig.toFixed(2),      s: 'JPYネット変化 (4週)',            c: ML.cot_sig>=0?'green':'red'},
+    {l:'Month-end Flow',v: ML.monthend_sig.toFixed(2), s: '月末リバランス圧力',               c: ML.monthend_sig>=0?'green':'red'},
   ];
-  const SPREAD_MOM_DAYS=20;
   document.getElementById('macrostrip').innerHTML=mItems.map(m=>
     `<div class="mc"><div class="mc-l">${m.l}</div><div class="mc-v" style="color:var(--${m.c})">${m.v}</div><div class="mc-s">${m.s}</div></div>`
   ).join('');
