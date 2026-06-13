@@ -1,0 +1,36 @@
+name: Ablation Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: '要因分解を実行します。完了後 docs/ablation.json がコミットされます。'
+        required: false
+        default: 'run'
+
+jobs:
+  ablation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install numpy yfinance
+
+      - name: Run ablation
+        run: python update.py --ablation
+
+      - name: Commit results
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/ablation.json docs/ablation.txt
+          git diff --staged --quiet || git commit -m "chore: ablation analysis $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
