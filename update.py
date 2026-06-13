@@ -186,26 +186,49 @@ def fetch_cot_jpy(dates):
         import cot_reports as cot  # type: ignore
         start_year = int(dates[0][:4]) if dates else 2016
         end_year   = int(dates[-1][:4]) if dates else 2026
+
+        # 1年分サンプルで列名を確認
+        _df_sample = cot.cot_year(year=end_year, cot_report_type="legacy_fut")
+        cols = list(_df_sample.columns)
+        print(f"[DEBUG] cot-reports columns (first 8): {cols[:8]}")
+
+        # 列名を動的に解決（大文字小文字・空白を無視してpartial match）
+        def _find_col(df, *keywords):
+            for kw in keywords:
+                for c in df.columns:
+                    if kw.lower() in c.lower():
+                        return c
+            raise KeyError(f"列が見つかりません: {keywords}")
+
+        mkt_col  = _find_col(_df_sample, "market and exchange", "market_and_exchange", "market name")
+        date_col = _find_col(_df_sample, "yymmdd", "as of date", "report_date")
+        long_col = _find_col(_df_sample, "noncommercial long", "non_commercial_long", "noncomm_positions_long")
+        shrt_col = _find_col(_df_sample, "noncommercial short", "non_commercial_short", "noncomm_positions_short")
+        print(f"[DEBUG] 使用列: market='{mkt_col}' date='{date_col}' long='{long_col}' short='{shrt_col}'")
+
         for year in range(start_year, end_year + 1):
             try:
                 df = cot.cot_year(year=year, cot_report_type="legacy_fut")
-                jpy = df[df["Market and Exchange Names"].str.contains(
-                    "JAPANESE YEN", na=False)]
+                jpy = df[df[mkt_col].astype(str).str.contains("JAPANESE YEN", na=False)]
+                count = 0
                 for _, row in jpy.iterrows():
                     try:
-                        ds = str(int(float(row["As of Date in Form YYMMDD"]))).zfill(6)
-                        yr = int(ds[:2]); yr = (2000 + yr if yr < 50 else 1900 + yr)
-                        d  = _dt(yr, int(ds[2:4]), int(ds[4:6]))
+                        raw_ds = str(row[date_col]).strip().split(".")[0].zfill(6)
+                        yr2 = int(raw_ds[:2]); yr2 = (2000 + yr2 if yr2 < 50 else 1900 + yr2)
+                        d   = _dt(yr2, int(raw_ds[2:4]), int(raw_ds[4:6]))
                         key = d.strftime("%Y/%m/%d")
-                        net = float(row["Noncommercial Long"]) \
-                            - float(row["Noncommercial Short"])
-                        weekly[key] = net
-                    except Exception:
+                        net = float(str(row[long_col]).replace(",","")) \
+                            - float(str(row[shrt_col]).replace(",",""))
+                        weekly[key] = net; count += 1
+                    except Exception as e2:
+                        print(f"[DEBUG] COT行パース失敗 {year}: {e2} row={dict(list(row.items())[:4])}")
                         continue
+                if count:
+                    print(f"[OK] COT cot-reports {year}: {count} 件")
             except Exception as e:
                 print(f"[WARN] COT cot-reports {year}: {e}")
         if weekly:
-            print(f"[OK] COT (cot-reports): {len(weekly)} 件")
+            print(f"[OK] COT (cot-reports): 合計 {len(weekly)} 件")
     except ImportError:
         print("[WARN] cot-reports未インストール → 代替手段を試みます")
     except Exception as e:
