@@ -40,8 +40,10 @@ DIM        = 3      # 遅延埋め込み次元(+ momentum, vol で計5次元)
 K_NN       = 15     # k-NN近傍数
 W_NORM     = 252    # 因果正規化のローリング窓
 W_VOLMED   = 252    # レジーム判定ボラ中央値のローリング窓
-SEL_N      = 150    # 重み選択窓(walk-forward)
-EVAL_N     = 250    # OOS評価窓
+SEL_N         = 150    # 重み選択窓・フォールバック(walk-forward)
+REGIME_SEL_N  = 500    # レジーム条件付き重み選択の最大遡及日数
+REGIME_MIN_N  = 40     # レジーム条件付きを使う最小サンプル数(不足時はSEL_Nにフォールバック)
+EVAL_N        = 250    # OOS評価窓
 HORIZONS   = 5      # 予測ホライズン(日)
 PIP_JPY      = 0.01                       # USD/JPY の 1pip
 SPREAD_PIPS  = 0.2                        # 実質往復コスト(pips)
@@ -679,7 +681,7 @@ def walk_forward(prices, Xe, regimes, offset):
     返り値: preds[m] (HORIZONS, N), errs[m] (HORIZONS, N)  ※ NaN埋め
     """
     N = len(prices)
-    hist_n = EVAL_N + SEL_N + HORIZONS + 5
+    hist_n = EVAL_N + max(SEL_N, REGIME_SEL_N) + HORIZONS + 5
     start = max(offset + 400, N - hist_n)
     preds = {m: np.full((HORIZONS, N), np.nan) for m in MODEL_KEYS}
     errs  = {m: np.full((HORIZONS, N), np.nan) for m in MODEL_KEYS}
@@ -697,33 +699,72 @@ def walk_forward(prices, Xe, regimes, offset):
                     errs[m][h, idx] = prices[idx + h + 1] - fc[m][h]
     return preds, errs, start
 
-def select_weights(errs, idx, sel_n=SEL_N):
+def select_weights(errs, idx, sel_n=SEL_N, regimes=None, current_regime=None):
     """
-    idxより前のsel_n日の1日先誤差のみで重みをグリッドサーチ。
-    誤差は指数減衰加重(半減期EWMA_HALFLIFE日)で直近を重視し、
-    レジーム遷移への追従を速くする(均等加重より低分散な動的更新)。
-    """
-    win = np.array([errs[m][0, idx - sel_n:idx] for m in MODEL_KEYS])
-    valid = ~np.isnan(win).any(axis=0)
-    win = win[:, valid]
-    n = win.shape[1]
-    if n < 30:
-        return np.array([0.0, 0.0, 0.0, 1.0]), None
-    if USE_EWMA:
-        ages = np.arange(n - 1, -1, -1)        # 列は古→新、最新の age=0
-        decay = 0.5 ** (ages / EWMA_HALFLIFE)
-        decay /= decay.sum()
-    else:
-        decay = np.full(n, 1.0 / n)            # v3.0の均等加重
-    comb_err = COMBOS @ win
-    rmse = np.sqrt(((comb_err ** 2) * decay).sum(axis=1))
-    i = int(np.argmin(rmse))
-    return COMBOS[i], float(rmse[i])
+    idxより前の誤差のみで重みをグリッドサーチ(因果)。
 
-def evaluate_oos(prices, preds, errs, start):
+    レジーム条件付きモード(regimes指定時):
+      直近REGIME_SEL_N日のうち current_regime と同じ日だけでグリッドサーチ。
+      サンプル数がREGIME_MIN_N未満の場合は通常モード(SEL_N全期間)にフォールバック。
+
+    通常モード:
+      直近sel_n日の全誤差でグリッドサーチ。
+    """
+    def _grid_search(win_subset):
+        """誤差行列 win_subset(M×T) からCOMBOSで最小RMSEの重みを返す"""
+        valid = ~np.isnan(win_subset).any(axis=0)
+        w = win_subset[:, valid]
+        n = w.shape[1]
+        if n < 30:
+            return np.array([0.0, 0.0, 0.0, 1.0]), None, n
+        if USE_EWMA:
+            ages  = np.arange(n - 1, -1, -1)
+            decay = 0.5 ** (ages / EWMA_HALFLIFE)
+            decay /= decay.sum()
+        else:
+            decay = np.full(n, 1.0 / n)
+        comb_err = COMBOS @ w
+        rmse = np.sqrt(((comb_err ** 2) * decay).sum(axis=1))
+        i = int(np.argmin(rmse))
+        return COMBOS[i], float(rmse[i]), n
+
+    # --- レジーム条件付きモード ---
+    if regimes is not None and current_regime is not None:
+        look_start = max(0, idx - REGIME_SEL_N)
+        win_all = np.array([errs[m][0, look_start:idx] for m in MODEL_KEYS])
+        regime_slice = np.array(regimes[look_start:idx])
+        mask = (regime_slice == current_regime)
+        win_regime = win_all[:, mask]
+        valid_regime = ~np.isnan(win_regime).any(axis=0)
+        n_regime = valid_regime.sum()
+
+        if n_regime >= REGIME_MIN_N:
+            w_sub = win_regime[:, valid_regime]
+            n = w_sub.shape[1]
+            if USE_EWMA:
+                # レジーム一致日のみでEWMA(新しい日ほど高重み)
+                # maskのインデックスを使って元のage(時系列上の距離)を計算
+                regime_indices = np.where(mask)[0]  # look_start基準のインデックス
+                ages = (idx - look_start - 1) - regime_indices[valid_regime]
+                decay = 0.5 ** (ages / EWMA_HALFLIFE)
+                decay /= decay.sum()
+            else:
+                decay = np.full(n, 1.0 / n)
+            comb_err = COMBOS @ w_sub
+            rmse = np.sqrt(((comb_err ** 2) * decay).sum(axis=1))
+            i = int(np.argmin(rmse))
+            return COMBOS[i], float(rmse[i]), f"regime({current_regime},n={n_regime})"
+
+    # --- 通常モード(フォールバック含む) ---
+    win = np.array([errs[m][0, idx - sel_n:idx] for m in MODEL_KEYS])
+    weights, rmse_val, n = _grid_search(win)
+    return weights, rmse_val, f"global(n={n})"
+
+def evaluate_oos(prices, preds, errs, start, regimes=None):
     """
     walk-forward重み選択つきOOS評価。
-    各評価日の重みは「その日より前の150日」の誤差のみから決定される。
+    regimes指定時: レジーム条件付き重み選択(REGIME_SEL_N日遡及・同レジーム日のみ)
+    サンプル不足時: 通常のSEL_N全期間にフォールバック
     """
     N = len(prices)
     eval_idxs = [i for i in range(max(start + SEL_N, N - EVAL_N - HORIZONS), N)
@@ -731,14 +772,31 @@ def evaluate_oos(prices, preds, errs, start):
     ens_pred = np.full((HORIZONS, N), np.nan)
     ens_err  = np.full((HORIZONS, N), np.nan)
     w_hist = []
+    regime_sel_log = {"regime": 0, "global": 0}  # どちらが使われたか集計
+
     for idx in eval_idxs:
-        w, _ = select_weights(errs, idx)
-        w_hist.append({"idx": idx, "w": w.tolist()})
+        cur_regime = regimes[idx] if regimes is not None else None
+        w, _, sel_mode = select_weights(
+            errs, idx,
+            regimes=regimes,
+            current_regime=cur_regime
+        )
+        if sel_mode.startswith("regime"):
+            regime_sel_log["regime"] += 1
+        else:
+            regime_sel_log["global"] += 1
+        w_hist.append({"idx": idx, "w": w.tolist(), "sel": sel_mode})
         for h in range(HORIZONS):
             p = sum(w[mi] * preds[m][h, idx] for mi, m in enumerate(MODEL_KEYS))
             ens_pred[h, idx] = p
             if idx + h + 1 < N:
                 ens_err[h, idx] = prices[idx + h + 1] - p
+
+    total = sum(regime_sel_log.values())
+    if total > 0:
+        print(f"[OK] 重み選択: レジーム条件付き {regime_sel_log['regime']}日 "
+              f"({regime_sel_log['regime']/total*100:.0f}%) / "
+              f"グローバルフォールバック {regime_sel_log['global']}日")
     return ens_pred, ens_err, eval_idxs, w_hist
 
 def _stats_at(err_row, pred_row, prices, idxs):
@@ -1639,7 +1697,8 @@ def main():
 
     print(f"walk-forwardバックテスト中({EVAL_N + SEL_N + HORIZONS}日)...")
     preds, errs, start = walk_forward(prices, Xe, regimes, offset)
-    ens_pred, ens_err, eval_idxs, w_hist = evaluate_oos(prices, preds, errs, start)
+    ens_pred, ens_err, eval_idxs, w_hist = evaluate_oos(
+        prices, preds, errs, start, regimes=regimes)
     print(f"OOS評価日数: {len(eval_idxs)}")
 
     # OOS統計(1日先) + DM検定
