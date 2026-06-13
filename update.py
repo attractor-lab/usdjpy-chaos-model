@@ -1768,9 +1768,11 @@ def main():
 
     # 本番予測(今日)
     idx = N - 1
-    w_today, _ = select_weights(errs, idx)
+    cur_regime_today = regimes[idx] if regimes is not None else None
+    w_today, _, sel_mode_today = select_weights(
+        errs, idx, regimes=regimes, current_regime=cur_regime_today)
     weights = {m: round(float(w_today[i]), 2) for i, m in enumerate(MODEL_KEYS)}
-    print(f"Weights(直近{SEL_N}日で選択): {weights}")
+    print(f"Weights(レジーム:{cur_regime_today} / {sel_mode_today}): {weights}")
 
     fc = {
         "chaos":    chaos_forecast(Xe, prices, regimes, offset, idx),
