@@ -1847,6 +1847,7 @@ def main():
         "ar":       ar_forecast(prices, idx),
         "momentum": momentum_forecast(prices, idx),
         "naive":    naive_forecast(prices, idx),
+        "ridge":    ridge_forecast(prices, Xe, offset, idx),
     }
     last = float(prices[-1])
     ens_today = []
