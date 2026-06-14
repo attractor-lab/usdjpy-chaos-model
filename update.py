@@ -81,6 +81,15 @@ COT_MOM_WEEKS      = 4      # COTモメンタム算出期間 (週)
 SPREAD_MOM_DAYS    = 20     # 10年債スプレッドモメンタム算出期間 (日)
 MONTHEND_DAYS      = 5      # 月末判定: 月末からN日以内
 
+# --- v3.3: Hurstベースポジションサイジング ---
+# Hurst高 → トレンド持続性あり → 同方向でサイズ増
+# Hurst低 → 確信度低/平均回帰的 → サイズ縮小（逆張りはしない）
+USE_HURST_SIZING  = False  # True = Hurstスケーリング有効。Falseで従来通り
+HURST_HIGH        = 0.55   # 以上: サイズ増（トレンド相場）
+HURST_LOW         = 0.45   # 未満: サイズ縮小（低確信度）
+HURST_HIGH_MULT   = 1.5    # トレンド相場のポジション倍率
+HURST_LOW_MULT    = 0.5    # 低確信度のポジション倍率
+
 REGIME_NAMES = ["Low Vol Range", "High Vol Range",
                 "Bull Trend", "Bear Trend", "Unstable"]
 
@@ -933,7 +942,7 @@ def build_macro_signal(dates, us10y, jp10y, sp500, cot_net):
 # 8. スプレッド込みPnLバックテスト
 # ============================================================
 def pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0,
-                 macro_signal=None):
+                 macro_signal=None, hurst_arr=None):
     """
     1日先予測の符号でポジション。想定元本100万円の円建てPnL。
     保有USD数量 = 100万円 / その日の価格。コストはポジション変更時に発生。
@@ -962,6 +971,14 @@ def pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0,
                 pos = float(pos_raw)
         else:
             pos = float(pos_raw)
+        # v3.3: Hurstベースサイジング（マクロレイヤー後に適用）
+        if USE_HURST_SIZING and hurst_arr is not None and pos != 0:
+            h = hurst_arr[s]
+            if not np.isnan(h):
+                if h > HURST_HIGH:
+                    pos *= HURST_HIGH_MULT   # トレンド相場: サイズ増
+                elif h < HURST_LOW:
+                    pos *= HURST_LOW_MULT    # 低確信度: サイズ縮小
         units = NOTIONAL_YEN / prices[idx]  # 保有USD数量
         dp = prices[idx + 1] - prices[idx]
         cost = COST_ONEWAY * abs(pos - pos_prev) * units
@@ -1739,9 +1756,9 @@ def main():
     from datetime import datetime as _dt
     dates_dt = [_dt.strptime(d, "%Y/%m/%d") for d in dates]
     pnl_summary, pnl_recs   = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0,
-                                             macro_signal=macro_score)
+                                             macro_signal=macro_score, hurst_arr=hurst)
     pnl_lag1,   pnl_recs_l1 = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=1,
-                                             macro_signal=macro_score)
+                                             macro_signal=macro_score, hurst_arr=hurst)
     if pnl_summary:
         print(f"PnL(OOS, 元本100万円, swap/cost込): total={pnl_summary['total']:+,}円 "
               f"(価格{pnl_summary['price']:+,} / swap{pnl_summary['swap']:+,}) "
@@ -1942,8 +1959,8 @@ def run_ablation():
         e_e = np.array([ens_err[0, i] for i in eval_idxs])
         e_n = np.array([errs["naive"][0, i] for i in eval_idxs])
         _, dm_p = dm_test(e_e, e_n)
-        p0, _ = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0)
-        p1, _ = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=1)
+        p0, _ = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0, hurst_arr=hurst)
+        p1, _ = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=1, hurst_arr=hurst)
         rows.append({
             "name": name,
             "rmse_ratio": st["rmse"] / sn["rmse"],
