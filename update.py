@@ -95,11 +95,11 @@ AR_ORDER      = 5      # AR次数
 # --- v3.3: Hurstベースポジションサイジング ---
 # Hurst高 → トレンド持続性あり → 同方向でサイズ増
 # Hurst低 → 確信度低/平均回帰的 → サイズ縮小（逆張りはしない）
-USE_HURST_SIZING  = True  # True = Hurstスケーリング有効。Falseで従来通り
+USE_HURST_SIZING  = False  # True = Hurstスケーリング有効。Falseで従来通り
 HURST_HIGH        = 0.55   # 以上: サイズ増（トレンド相場）
 HURST_LOW         = 0.45   # 未満: サイズ縮小（低確信度）
 HURST_HIGH_MULT   = 1.5    # トレンド相場のポジション倍率
-HURST_LOW_MULT    = 1   # 低確信度のポジション倍率（マイナス=逆張り）
+HURST_LOW_MULT    = -0.5   # 低確信度のポジション倍率（マイナス=逆張り）
 
 REGIME_NAMES = ["Low Vol Range", "High Vol Range",
                 "Bull Trend", "Bear Trend", "Unstable"]
@@ -859,16 +859,28 @@ def dm_test(e_model, e_naive):
 # ============================================================
 # 6. conformal 予測区間 / カバレッジ / 上昇確率
 # ============================================================
-def conformal_quantiles(ens_err, eval_idxs):
-    """ホライズン別にOOS残差の経験分位点を取得"""
+def conformal_quantiles(ens_err, eval_idxs, rv=None):
+    """
+    ホライズン別にOOS残差の経験分位点を取得。
+    rv指定時: 残差をその日のボラティリティで正規化して分位点を計算し、
+    当日rvでスケールバック。高ボラ期の残差が尾部を膨らませる問題を軽減。
+    """
     qs = {}
+    cur_rv = float(rv[-1]) if rv is not None else None
     for h in range(HORIZONS):
-        es = np.array([ens_err[h, i] for i in eval_idxs if not np.isnan(ens_err[h, i])])
-        if len(es) < 50:
+        valid_idx = [i for i in eval_idxs if not np.isnan(ens_err[h, i])]
+        es_raw = np.array([ens_err[h, i] for i in valid_idx])
+        if len(es_raw) < 50:
             qs[h] = None
             continue
-        qs[h] = {p: float(np.percentile(es, p)) for p in (10, 25, 50, 75, 90)}
-        qs[h]["_errs"] = es
+        if rv is not None:
+            rv_vals = np.array([max(float(rv[i]), 1e-8) for i in valid_idx])
+            es_norm = es_raw / rv_vals
+            qs[h] = {p: float(np.percentile(es_norm, p) * cur_rv) for p in (10, 25, 50, 75, 90)}
+            qs[h]["_errs"] = es_norm * cur_rv
+        else:
+            qs[h] = {p: float(np.percentile(es_raw, p)) for p in (10, 25, 50, 75, 90)}
+            qs[h]["_errs"] = es_raw
     return qs
 
 def compute_up_prob_series(prices, ens_pred, ens_err, eval_idxs,
@@ -1374,9 +1386,22 @@ new Chart(document.getElementById('c0'),{
   ]},
   options:{responsive:true,maintainAspectRatio:false,
     plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,
-      callbacks:{label:ctx=>ctx.parsed.y!=null&&ctx.dataset.label?ctx.dataset.label+': ¥'+ctx.parsed.y.toFixed(2):''}}},
+      callbacks:{
+        label:ctx=>{
+          if(!ctx.dataset.label||ctx.dataset.label==='Actual'||ctx.parsed.y==null)return null;
+          return ctx.dataset.label+': ¥'+ctx.parsed.y.toFixed(2);
+        },
+        afterBody:items=>{
+          if(!items.length)return[];
+          const i=items[0].dataIndex;
+          const out=[];
+          if(p10[i]!=null&&p90[i]!=null)out.push('P10–90: ¥'+p10[i].toFixed(2)+' – ¥'+p90[i].toFixed(2));
+          if(p25[i]!=null&&p75[i]!=null)out.push('P25–75: ¥'+p25[i].toFixed(2)+' – ¥'+p75[i].toFixed(2));
+          return out;
+        }
+      }}},
     scales:{
-      x:{grid:{color:'rgba(30,45,69,.6)'},ticks:{color:'#556688',maxRotation:45,autoSkip:false,maxTicksLimit:15}},
+      x:{grid:{color:'rgba(30,45,69,.6)'},ticks:{color:'#556688',maxRotation:45,autoSkip:false,maxTicksLimit:15,callback:(v,i,ticks)=>{const l=pLabels[i];return l&&l.startsWith('+')?l:typeof l==='string'?l.slice(5):l;}}},
       y:{grid:{color:'rgba(30,45,69,.6)'},ticks:{color:'#556688',callback:v=>'¥'+v.toFixed(1)},min:ymin,max:ymax}
     }
   }
@@ -1819,7 +1844,7 @@ def main():
             multistep_naive[f"d{h+1}"] = {"rmse": round(sn["rmse"], 4)}
 
     # conformal区間とカバレッジ
-    cq = conformal_quantiles(ens_err, eval_idxs)
+    cq = conformal_quantiles(ens_err, eval_idxs, rv=rv)
     coverage = coverage_check(ens_err, eval_idxs)
 
     # PnL(スワップ込み、ラグ0=本体 + ラグ1=執行感応度テスト)
