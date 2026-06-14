@@ -924,7 +924,7 @@ def build_macro_signal(dates, us10y, jp10y, sp500, cot_net):
         monthend_sig[i] = -float(np.clip(sp_ret * 10, -1.0, 1.0))
 
     # --- 加重合成 & soft-clip [-1, +1] ---
-    composite  = 0.62 * spread_sig + 0.38 * monthend_sig  # COT除外: 10Y(62%) + 月末(38%)
+    composite  = 0.40 * spread_sig + 0.35 * cot_sig + 0.25 * monthend_sig
     macro_score = np.tanh(rolling_zscore(composite) * 0.7)
 
     return macro_score, spread_sig, cot_sig, monthend_sig
@@ -1487,7 +1487,7 @@ if(ML){
   });
   document.getElementById('macronote').textContent=
     `マクロスコアが中立ゾーン(±${ML.neutral_band})外でk-NNシグナルと逆行する場合、ポジションを${ML.oppose_mult*100}%に縮小。`+
-    ` 因子: 米日10年債スプレッドモメンタム62% + 月末リバランスフロー38%（COT除外）。`+
+    ` 因子: 米日10年債スプレッドモメンタム40% + COT大口投機筋JPYポジション変化35% + 月末リバランスフロー25%。`+
     ` データ: US10Y=${ML.us10y_source} JP10Y=${ML.jp10y_source} COT=${ML.cot_source}`;
 }
 
