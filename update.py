@@ -85,10 +85,10 @@ MONTHEND_DAYS      = 5      # 月末判定: 月末からN日以内
 # Hurst高 → トレンド持続性あり → 同方向でサイズ増
 # Hurst低 → 確信度低/平均回帰的 → サイズ縮小（逆張りはしない）
 USE_HURST_SIZING  = True  # True = Hurstスケーリング有効。Falseで従来通り
-HURST_HIGH        = 0.60   # 以上: サイズ増（トレンド相場）
+HURST_HIGH        = 0.55   # 以上: サイズ増（トレンド相場）
 HURST_LOW         = 0.40   # 未満: サイズ縮小（低確信度）
-HURST_HIGH_MULT   = 1.5    # トレンド相場のポジション倍率
-HURST_LOW_MULT    = -0.5   # 低確信度のポジション倍率（マイナス=逆張り）
+HURST_HIGH_MULT   = 1.3    # トレンド相場のポジション倍率
+HURST_LOW_MULT    = 0   # 低確信度のポジション倍率（マイナス=逆張り）
 
 REGIME_NAMES = ["Low Vol Range", "High Vol Range",
                 "Bull Trend", "Bear Trend", "Unstable"]
