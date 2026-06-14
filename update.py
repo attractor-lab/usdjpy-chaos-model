@@ -43,7 +43,7 @@ W_VOLMED   = 252    # レジーム判定ボラ中央値のローリング窓
 SEL_N         = 150    # 重み選択窓・フォールバック(walk-forward)
 REGIME_SEL_N  = 500    # レジーム条件付き重み選択の最大遡及日数
 REGIME_MIN_N  = 40     # レジーム条件付きを使う最小サンプル数(不足時はSEL_Nにフォールバック)
-EVAL_N        = 500    # OOS評価窓(2023年初〜現在をカバー)
+EVAL_N        = 630    # OOS評価窓(2023年初〜現在をカバー)
 HORIZONS   = 5      # 予測ホライズン(日)
 PIP_JPY      = 0.01                       # USD/JPY の 1pip
 SPREAD_PIPS  = 0.2                        # 実質往復コスト(pips)
@@ -81,14 +81,20 @@ COT_MOM_WEEKS      = 4      # COTモメンタム算出期間 (週)
 SPREAD_MOM_DAYS    = 20     # 10年債スプレッドモメンタム算出期間 (日)
 MONTHEND_DAYS      = 5      # 月末判定: 月末からN日以内
 
+# --- v3.3: モデル拡張 ---
+AR_ORDER      = 10     # AR次数(AR(5)→AR(10)に拡張。週次・隔週パターンを捕捉)
+USE_CROSS_CCY = True   # EUR/USD・GBP/USD対数リターンをk-NN埋め込みに追加
+RIDGE_ALPHA   = 1.0    # Ridge回帰の正則化係数
+RIDGE_LOOKBACK= 300    # Ridge回帰の学習窓(日)
+
 # --- v3.3: Hurstベースポジションサイジング ---
 # Hurst高 → トレンド持続性あり → 同方向でサイズ増
 # Hurst低 → 確信度低/平均回帰的 → サイズ縮小（逆張りはしない）
-USE_HURST_SIZING  = True  # True = Hurstスケーリング有効。Falseで従来通り
+USE_HURST_SIZING  = False  # True = Hurstスケーリング有効。Falseで従来通り
 HURST_HIGH        = 0.55   # 以上: サイズ増（トレンド相場）
 HURST_LOW         = 0.45   # 未満: サイズ縮小（低確信度）
 HURST_HIGH_MULT   = 1.5    # トレンド相場のポジション倍率
-HURST_LOW_MULT    = 1   # 低確信度のポジション倍率（マイナス=逆張り）
+HURST_LOW_MULT    = -0.5   # 低確信度のポジション倍率（マイナス=逆張り）
 
 REGIME_NAMES = ["Low Vol Range", "High Vol Range",
                 "Bull Trend", "Bear Trend", "Unstable"]
@@ -286,6 +292,14 @@ def fetch_japan10y(dates):
 def fetch_sp500(dates):
     """S&P500終値。月末リバランスフロー算出用。"""
     return _fetch_yf_series("^GSPC", dates, 5000.0, label="S&P500")
+
+def fetch_eurusd(dates):
+    """EUR/USD終値。クロス通貨特徴量用。"""
+    return _fetch_yf_series("EURUSD=X", dates, 1.1, label="EUR/USD")
+
+def fetch_gbpusd(dates):
+    """GBP/USD終値。クロス通貨特徴量用。"""
+    return _fetch_yf_series("GBPUSD=X", dates, 1.3, label="GBP/USD")
 
 def fetch_cot_jpy(dates):
     """
@@ -631,7 +645,7 @@ def chaos_forecast(Xe, prices, regimes, offset, idx, horizons=HORIZONS,
         out.append(float(prices[idx] * np.dot(rel, ws)))
     return out
 
-def ar_forecast(prices, idx, p=5, steps=HORIZONS, lookback=300):
+def ar_forecast(prices, idx, p=AR_ORDER, steps=HORIZONS, lookback=300):
     """AR(p) を対数リターンで推定(v2の価格水準ARは単位根近傍で不安定)"""
     seg = prices[max(0, idx - lookback):idx + 1]
     r = np.diff(np.log(seg))
@@ -648,6 +662,32 @@ def ar_forecast(prices, idx, p=5, steps=HORIZONS, lookback=300):
         last *= math.exp(rh)
         out.append(last)
         hist.append(rh)
+    return out
+
+def ridge_forecast(prices, Xe, offset, idx, steps=HORIZONS,
+                   lookback=RIDGE_LOOKBACK, alpha=RIDGE_ALPHA):
+    """ローリングRidge回帰: 埋め込み特徴量→翌日対数リターン。ARの多変量線形版。"""
+    t_e = idx - offset
+    if t_e < 60:
+        return [float(prices[idx])] * steps
+    start_e = max(0, t_e - lookback)
+    X = Xe[start_e:t_e]
+    pi = np.arange(offset + start_e, offset + t_e)
+    if pi[-1] + 1 >= len(prices) or len(pi) != len(X):
+        return [float(prices[idx])] * steps
+    r = np.log(prices[pi + 1] + 1e-8) - np.log(prices[pi] + 1e-8)
+    if len(r) < 30:
+        return [float(prices[idx])] * steps
+    n_feat = X.shape[1]
+    try:
+        coef = np.linalg.solve(X.T @ X + alpha * np.eye(n_feat), X.T @ r)
+    except np.linalg.LinAlgError:
+        return [float(prices[idx])] * steps
+    pred_r = float(np.clip(np.dot(coef, Xe[t_e]), -0.05, 0.05))
+    out, last = [], float(prices[idx])
+    for _ in range(steps):
+        last *= math.exp(pred_r)
+        out.append(last)
     return out
 
 def momentum_forecast(prices, idx, steps=HORIZONS):
@@ -667,18 +707,19 @@ def naive_forecast(prices, idx, steps=HORIZONS):
     """ランダムウォークベンチマーク: 明日=今日"""
     return [float(prices[idx])] * steps
 
-MODEL_KEYS = ["chaos", "ar", "momentum", "naive"]
+MODEL_KEYS = ["chaos", "ar", "momentum", "naive", "ridge"]
 
 # ============================================================
 # 5. walk-forward 検証エンジン
 # ============================================================
-def _weight_combos(n_models=4, step=10):
+def _weight_combos(n_models=5, step=10):
     combos = []
     for a in range(step + 1):
         for b in range(step + 1 - a):
             for c in range(step + 1 - a - b):
-                d = step - a - b - c
-                combos.append((a / step, b / step, c / step, d / step))
+                for d in range(step + 1 - a - b - c):
+                    e = step - a - b - c - d
+                    combos.append((a/step, b/step, c/step, d/step, e/step))
     return np.array(combos)
 
 COMBOS = _weight_combos()
@@ -700,6 +741,7 @@ def walk_forward(prices, Xe, regimes, offset):
             "ar":       ar_forecast(prices, idx),
             "momentum": momentum_forecast(prices, idx),
             "naive":    naive_forecast(prices, idx),
+            "ridge":    ridge_forecast(prices, Xe, offset, idx),
         }
         for m in MODEL_KEYS:
             for h in range(HORIZONS):
@@ -1703,8 +1745,18 @@ def main():
     vn = rolling_zscore(rv)
     rn = rolling_zscore(r_usd - JPY_RATE)  # 金利差(USDキャリーの源泉)の因果zスコア
     tau = estimate_tau(pn)
+    if USE_CROSS_CCY:
+        eurusd, _ = fetch_eurusd(dates)
+        gbpusd, _ = fetch_gbpusd(dates)
+        eur_ret = rolling_zscore(np.concatenate([[0], np.diff(np.log(np.maximum(eurusd, 1e-6)))]))
+        gbp_ret = rolling_zscore(np.concatenate([[0], np.diff(np.log(np.maximum(gbpusd, 1e-6)))]))
+        cross_feats = [eur_ret, gbp_ret]
+    else:
+        cross_feats = []
+    macro_feats = [rn, vz] if USE_MACRO else []
+    extra_feats = macro_feats + cross_feats
     Xe, offset = build_embedding(pn, mn, vn, tau,
-                                 extra=[rn, vz] if USE_MACRO else None)
+                                 extra=extra_feats if extra_feats else None)
     print(f"τ={tau} (ACFゼロ交差) | 埋め込み次元={Xe.shape[1]} | "
           f"EWMA={'on' if USE_EWMA else 'off'} MACRO={'on' if USE_MACRO else 'off'} | offset={offset}")
 
@@ -1723,14 +1775,14 @@ def main():
         oos[m] = _stats_at(errs[m][0], preds[m][0], prices, eval_idxs)
     oos["ensemble"] = _stats_at(ens_err[0], ens_pred[0], prices, eval_idxs)
     e_naive = np.array([errs["naive"][0, i] for i in eval_idxs])
-    for m in ["chaos", "ar", "momentum"]:
+    for m in ["chaos", "ar", "momentum", "ridge"]:
         e_m = np.array([errs[m][0, i] for i in eval_idxs])
         s, p = dm_test(e_m, e_naive)
         dm[m] = {"stat": round(s, 3), "p": round(p, 4)} if s is not None else None
     e_ens = np.array([ens_err[0, i] for i in eval_idxs])
     s, p = dm_test(e_ens, e_naive)
     dm["ensemble"] = {"stat": round(s, 3), "p": round(p, 4)} if s is not None else None
-    for m in ["naive", "ensemble", "chaos", "ar", "momentum"]:
+    for m in ["naive", "ensemble", "chaos", "ar", "momentum", "ridge"]:
         st = oos[m]
         if st:
             da_s = f"{st['da']*100:.1f}%" if st["da"] is not None else "—"
@@ -1950,8 +2002,11 @@ def run_ablation():
         USE_EWMA, USE_MACRO = ue, um
         regimes, _ = classify_regime(rv, adx, pdi, mdi, hurst,
                                      risk_off=risk_off if um else None)
+        abl_macro = [rn, vz] if um else []
+        abl_cross = cross_feats if USE_CROSS_CCY else []
+        abl_extra = abl_macro + abl_cross
         Xe, offset = build_embedding(pn, mn, vn, tau,
-                                     extra=[rn, vz] if um else None)
+                                     extra=abl_extra if abl_extra else None)
         preds, errs, start = walk_forward(prices, Xe, regimes, offset)
         ens_pred, ens_err, eval_idxs, _ = evaluate_oos(prices, preds, errs, start)
         st = _stats_at(ens_err[0], ens_pred[0], prices, eval_idxs)
