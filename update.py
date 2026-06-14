@@ -43,7 +43,7 @@ W_VOLMED   = 252    # レジーム判定ボラ中央値のローリング窓
 SEL_N         = 150    # 重み選択窓・フォールバック(walk-forward)
 REGIME_SEL_N  = 500    # レジーム条件付き重み選択の最大遡及日数
 REGIME_MIN_N  = 40     # レジーム条件付きを使う最小サンプル数(不足時はSEL_Nにフォールバック)
-EVAL_N        = 900    # OOS評価窓(2022年初〜現在をカバー)
+EVAL_N        = 630    # OOS評価窓(2023年初〜現在をカバー)
 HORIZONS   = 5      # 予測ホライズン(日)
 PIP_JPY      = 0.01                       # USD/JPY の 1pip
 SPREAD_PIPS  = 0.2                        # 実質往復コスト(pips)
@@ -1262,7 +1262,7 @@ function sw(i){tabs.forEach((t,j)=>t.classList.toggle('on',i===j));panels.forEac
 
 // ---- TAB 0 ----
 const lp=D.last20_prices, ld=D.last20_dates, nL=lp.length;
-const pLabels=[...ld.map(d=>d.slice(5)),'+1','+2','+3','+4','+5'];
+const pLabels=[...ld.map(d=>d),'+1','+2','+3','+4','+5'];
 const nPad=Array(nL-1).fill(null);
 const actData=[...lp,...Array(5).fill(null)];
 const ensM=[...nPad,D.last_price,...D.ens.map(p=>p.mean)];
@@ -1357,7 +1357,7 @@ document.getElementById('rlegend').innerHTML=RN.map((n,i)=>
 
 new Chart(document.getElementById('c1'),{
   type:'line',
-  data:{labels:rh.map(r=>r.date.slice(5)),datasets:[
+  data:{labels:rh.map(r=>r.date),datasets:[
     {label:'Price',data:rh.map(r=>r.price),borderColor:'#00d4ff',borderWidth:1.5,pointRadius:0,fill:false,tension:.3,yAxisID:'y'},
     {label:'Vol%',data:rh.map(r=>+(r.vol*100).toFixed(2)),borderColor:'rgba(255,170,0,.7)',borderWidth:1,pointRadius:0,borderDash:[3,2],fill:false,tension:.3,yAxisID:'y2'},
     {label:'ADX',data:rh.map(r=>r.adx!=null?+r.adx.toFixed(1):null),borderColor:'rgba(170,102,255,.7)',borderWidth:1,pointRadius:0,borderDash:[2,3],fill:false,tension:.3,yAxisID:'y2',spanGaps:true},
@@ -1373,7 +1373,7 @@ new Chart(document.getElementById('c1'),{
 
 new Chart(document.getElementById('c1h'),{
   type:'line',
-  data:{labels:rh.map(r=>r.date.slice(5)),datasets:[
+  data:{labels:rh.map(r=>r.date),datasets:[
     {label:'Hurst',data:rh.map(r=>r.hurst!=null?+r.hurst.toFixed(3):null),borderColor:'#aa66ff',borderWidth:1.5,pointRadius:0,fill:true,backgroundColor:'rgba(170,102,255,.1)',tension:.3,spanGaps:true},
   ]},
   options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
@@ -1445,7 +1445,7 @@ document.getElementById('tcov').innerHTML=cvh;
 const res=D.errors_ens_60||[];
 new Chart(document.getElementById('c2b'),{
   type:'bar',
-  data:{labels:res.map(r=>r.date.slice(5)),datasets:[
+  data:{labels:res.map(r=>r.date),datasets:[
     {data:res.map(r=>r.e),backgroundColor:res.map(r=>r.e>=0?'rgba(0,255,136,.5)':'rgba(255,68,102,.4)'),borderWidth:0,borderRadius:2}
   ]},
   options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
@@ -1471,7 +1471,7 @@ if(ML){
   ).join('');
   new Chart(document.getElementById('c3m'),{
     type:'line',
-    data:{labels:ML.history_dates.map(d=>d.slice(5)),datasets:[
+    data:{labels:ML.history_dates.map(d=>d),datasets:[
       {label:'Macro Score',  data:ML.history_score,  borderColor:'#00d4ff',borderWidth:1.5,pointRadius:0,fill:true,backgroundColor:'rgba(0,212,255,.06)',tension:.2},
       {label:'10Y Spread',   data:ML.history_spread, borderColor:'#00ff88',borderWidth:1,borderDash:[3,2],pointRadius:0,fill:false,tension:.2},
       {label:'COT Signal',   data:ML.history_cot,    borderColor:'#ffaa00',borderWidth:1,borderDash:[3,2],pointRadius:0,fill:false,tension:.2},
@@ -1509,7 +1509,7 @@ if(P){
   ).join('');
   new Chart(document.getElementById('c3p'),{
     type:'line',
-    data:{labels:PC.dates.map(d=>d.slice(5)),datasets:[
+    data:{labels:PC.dates.map(d=>d),datasets:[
       {label:'Total (swap込)',data:PC.cum,borderColor:'#00ff88',borderWidth:1.5,pointRadius:0,fill:true,backgroundColor:'rgba(0,255,136,.06)',tension:.1},
       {label:'Swap成分',data:PC.cum_swap,borderColor:'#ffaa00',borderWidth:1,borderDash:[4,3],pointRadius:0,fill:false,tension:.1},
       {label:'執行ラグ1日',data:PC.cum_lag1,borderColor:'#aa66ff',borderWidth:1.2,borderDash:[2,2],pointRadius:0,fill:false,tension:.1,spanGaps:false},
@@ -1562,7 +1562,7 @@ document.getElementById('wrows').innerHTML=wh;
 const whist=D.weights_history;
 new Chart(document.getElementById('c4w'),{
   type:'line',
-  data:{labels:whist.map(r=>r.date.slice(5)),datasets:[
+  data:{labels:whist.map(r=>r.date),datasets:[
     {label:'Chaos',data:whist.map(r=>r.w[0]),borderColor:'#aa66ff',backgroundColor:'rgba(170,102,255,.3)',fill:true,pointRadius:0,borderWidth:1},
     {label:'AR',data:whist.map(r=>r.w[1]),borderColor:'#ffaa00',backgroundColor:'rgba(255,170,0,.3)',fill:true,pointRadius:0,borderWidth:1},
     {label:'Momentum',data:whist.map(r=>r.w[2]),borderColor:'#4488ff',backgroundColor:'rgba(68,136,255,.3)',fill:true,pointRadius:0,borderWidth:1},
