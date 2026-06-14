@@ -1390,8 +1390,11 @@ const p75=[...nPad,D.last_price,...D.ens.map(p=>p.p75)];
 const p90=[...nPad,D.last_price,...D.ens.map(p=>p.p90)];
 const arM=[...nPad,D.last_price,...D.ar_preds];
 const chaosM=[...nPad,D.last_price,...D.chaos_preds];
-const allVals=[...lp,...D.ens.map(p=>p.p10),...D.ens.map(p=>p.p90)].filter(v=>v!=null);
-const ymin=Math.min(...allVals)-0.5, ymax=Math.max(...allVals)+0.5;
+// y軸: 直近20日の実績価格 + 1日予測のP10/P90 を基準に、価格の0.8%パディング
+const priceVals=[...lp, D.last_price, D.ens[0].p10, D.ens[0].p90].filter(v=>v!=null);
+const _yrange=Math.max(...priceVals)-Math.min(...priceVals);
+const _ypad=Math.max(_yrange*0.3, D.last_price*0.008);
+const ymin=Math.min(...priceVals)-_ypad, ymax=Math.max(...priceVals)+_ypad;
 
 new Chart(document.getElementById('c0'),{
   type:'line',
@@ -1512,7 +1515,7 @@ new Chart(document.getElementById('c1h'),{
   options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
     scales:{
       x:{display:false},
-      y:{grid:{color:'rgba(30,45,69,.5)'},ticks:{color:'#aa66ff'},min:0.3,max:0.8,
+      y:{grid:{color:'rgba(30,45,69,.5)'},ticks:{color:'#aa66ff'},suggestedMin:0.3,suggestedMax:0.8,
         title:{display:true,text:'Hurst (>0.55=Trend)',color:'#556688',font:{size:10}}}
     }
   }
