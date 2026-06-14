@@ -51,6 +51,11 @@ COST_ONEWAY  = SPREAD_PIPS * PIP_JPY / 2  # 片道コスト(円/USD) = 0.001
 NOTIONAL_YEN = 1_000_000                  # PnL想定元本(円)
 PNL_THRESH   = 0.02   # 予測変化がこの閾値(円)未満なら見送り
 
+# --- UP Probability フィルター ---
+USE_UP_PROB_FILTER = True   # True: UP Prob が中立ゾーンの日は取引スキップ
+UP_PROB_THRESH     = 0.60   # 閾値。up_prob > thresh または < (1-thresh) の時のみ取引
+UP_PROB_MIN_N      = 50     # 過去残差の最低必要サンプル数(不足時はフィルター無効)
+
 # --- スワップ(キャリー)モデル ---
 # 理論キャリー = 価格 × (r_USD − r_JPY) / 365 × 暦日数(週末分も自然に加算)
 # 実際の業者スワップとの乖離はヘアカット(常にトレーダーに不利な方向)で近似
@@ -81,8 +86,7 @@ COT_MOM_WEEKS      = 4      # COTモメンタム算出期間 (週)
 SPREAD_MOM_DAYS    = 20     # 10年債スプレッドモメンタム算出期間 (日)
 MONTHEND_DAYS      = 5      # 月末判定: 月末からN日以内
 
-AR_ORDER      = 10     # AR次数(週次・隔週パターン捕捉)
-USE_CROSS_CCY = True   # EUR/USD・GBP/USDをk-NN埋め込みに追加
+AR_ORDER      = 5      # AR次数
 
 # --- v3.3: Hurstベースポジションサイジング ---
 # Hurst高 → トレンド持続性あり → 同方向でサイズ増
@@ -289,14 +293,6 @@ def fetch_japan10y(dates):
 def fetch_sp500(dates):
     """S&P500終値。月末リバランスフロー算出用。"""
     return _fetch_yf_series("^GSPC", dates, 5000.0, label="S&P500")
-
-def fetch_eurusd(dates):
-    """EUR/USD終値。クロス通貨k-NN特徴量用。"""
-    return _fetch_yf_series("EURUSD=X", dates, 1.1, label="EUR/USD")
-
-def fetch_gbpusd(dates):
-    """GBP/USD終値。クロス通貨k-NN特徴量用。"""
-    return _fetch_yf_series("GBPUSD=X", dates, 1.3, label="GBP/USD")
 
 def fetch_cot_jpy(dates):
     """
@@ -871,6 +867,28 @@ def conformal_quantiles(ens_err, eval_idxs):
         qs[h]["_errs"] = es
     return qs
 
+def compute_up_prob_series(prices, ens_pred, ens_err, eval_idxs,
+                           min_n=UP_PROB_MIN_N):
+    """
+    各OOS日のUP確率をwalk-forward（因果）で計算。
+    up_prob[idx] = 過去残差をens_pred[0,idx]に加算した時に
+                   prices[idx]を上回る割合。
+    min_n未満の日はnanを返す（フィルター無効扱い）。
+    """
+    up_prob = {}
+    past_errs = []
+    for idx in eval_idxs:
+        if len(past_errs) >= min_n:
+            pred = ens_pred[0, idx]
+            errs_arr = np.array(past_errs)
+            up_prob[idx] = float(np.mean(pred + errs_arr > prices[idx]))
+        else:
+            up_prob[idx] = float("nan")
+        e = ens_err[0, idx]
+        if not np.isnan(e):
+            past_errs.append(e)
+    return up_prob
+
 def coverage_check(ens_err, eval_idxs, holdout=60):
     """前半残差で分位点を作り、後半60日でカバレッジを実測(分位点の自己評価を回避)"""
     out = {}
@@ -953,7 +971,7 @@ def build_macro_signal(dates, us10y, jp10y, sp500, cot_net):
 # 8. スプレッド込みPnLバックテスト
 # ============================================================
 def pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0,
-                 macro_signal=None, hurst_arr=None):
+                 macro_signal=None, hurst_arr=None, up_prob_map=None):
     """
     1日先予測の符号でポジション。想定元本100万円の円建てPnL。
     保有USD数量 = 100万円 / その日の価格。コストはポジション変更時に発生。
@@ -973,6 +991,12 @@ def pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0,
             continue
         edge    = ens_pred[0, s] - prices[s]
         pos_raw = 0 if abs(edge) < PNL_THRESH else (1 if edge > 0 else -1)
+        # UP Prob フィルター: 確信度が中立ゾーンの日はスキップ
+        if USE_UP_PROB_FILTER and up_prob_map is not None and pos_raw != 0:
+            up_p = up_prob_map.get(s, float("nan"))
+            if not np.isnan(up_p):
+                if UP_PROB_THRESH > up_p > (1 - UP_PROB_THRESH):
+                    pos_raw = 0
         # マクロ方向レイヤー: 中立ゾーン外でk-NNと逆行する場合のみ縮小
         if macro_signal is not None and USE_MACRO_LAYER and pos_raw != 0:
             ms = macro_signal[s]
@@ -1714,18 +1738,8 @@ def main():
     vn = rolling_zscore(rv)
     rn = rolling_zscore(r_usd - JPY_RATE)  # 金利差(USDキャリーの源泉)の因果zスコア
     tau = estimate_tau(pn)
-    if USE_CROSS_CCY:
-        eurusd, _ = fetch_eurusd(dates)
-        gbpusd, _ = fetch_gbpusd(dates)
-        eur_ret = rolling_zscore(np.concatenate([[0], np.diff(np.log(np.maximum(eurusd, 1e-6)))]))
-        gbp_ret = rolling_zscore(np.concatenate([[0], np.diff(np.log(np.maximum(gbpusd, 1e-6)))]))
-        cross_feats = [eur_ret, gbp_ret]
-    else:
-        cross_feats = []
-    macro_feats = [rn, vz] if USE_MACRO else []
-    extra_feats = macro_feats + cross_feats
     Xe, offset = build_embedding(pn, mn, vn, tau,
-                                 extra=extra_feats if extra_feats else None)
+                                 extra=[rn, vz] if USE_MACRO else None)
     print(f"τ={tau} (ACFゼロ交差) | 埋め込み次元={Xe.shape[1]} | "
           f"EWMA={'on' if USE_EWMA else 'off'} MACRO={'on' if USE_MACRO else 'off'} | offset={offset}")
 
@@ -1776,10 +1790,13 @@ def main():
     # PnL(スワップ込み、ラグ0=本体 + ラグ1=執行感応度テスト)
     from datetime import datetime as _dt
     dates_dt = [_dt.strptime(d, "%Y/%m/%d") for d in dates]
+    up_prob_map = compute_up_prob_series(prices, ens_pred, ens_err, eval_idxs)
     pnl_summary, pnl_recs   = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=0,
-                                             macro_signal=macro_score, hurst_arr=hurst)
+                                             macro_signal=macro_score, hurst_arr=hurst,
+                                             up_prob_map=up_prob_map)
     pnl_lag1,   pnl_recs_l1 = pnl_backtest(prices, dates_dt, ens_pred, eval_idxs, r_usd, lag=1,
-                                             macro_signal=macro_score, hurst_arr=hurst)
+                                             macro_signal=macro_score, hurst_arr=hurst,
+                                             up_prob_map=up_prob_map)
     if pnl_summary:
         print(f"PnL(OOS, 元本100万円, swap/cost込): total={pnl_summary['total']:+,}円 "
               f"(価格{pnl_summary['price']:+,} / swap{pnl_summary['swap']:+,}) "
@@ -1971,9 +1988,8 @@ def run_ablation():
         USE_EWMA, USE_MACRO = ue, um
         regimes, _ = classify_regime(rv, adx, pdi, mdi, hurst,
                                      risk_off=risk_off if um else None)
-        abl_extra = ([rn, vz] if um else []) + cross_feats
         Xe, offset = build_embedding(pn, mn, vn, tau,
-                                     extra=abl_extra if abl_extra else None)
+                                     extra=[rn, vz] if um else None)
         preds, errs, start = walk_forward(prices, Xe, regimes, offset)
         ens_pred, ens_err, eval_idxs, _ = evaluate_oos(prices, preds, errs, start)
         st = _stats_at(ens_err[0], ens_pred[0], prices, eval_idxs)
