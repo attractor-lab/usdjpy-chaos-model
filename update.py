@@ -1884,7 +1884,7 @@ def main():
                                 progress=False, auto_adjust=True)
             df_rt = df_rt.dropna()
             if len(df_rt) > 0:
-                rt_price = float(df_rt["Close"].iloc[-1])
+                rt_price = float(df_rt["Close"].iloc[-1].item() if hasattr(df_rt["Close"].iloc[-1], 'item') else df_rt["Close"].iloc[-1])
                 today = _date.today().strftime("%Y/%m/%d")
                 if dates[-1] != today:
                     dates = dates + [today]
