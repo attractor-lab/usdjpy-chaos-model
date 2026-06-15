@@ -1419,7 +1419,7 @@ if(DA&&DA.use_monitor&&DA.status!=='ok'){
 
 const ratio=D.oos.ensemble.rmse/D.oos.naive.rmse;
 const mData=[
-  {l:'1D Forecast',v:'¥'+D.ens[0].mean.toFixed(2),s:'['+D.ens[0].p10.toFixed(2)+', '+D.ens[0].p90.toFixed(2)+']',c:'cyan'},
+  {l:'1D Forecast',v:'¥'+D.ens[0].mean.toFixed(2),s:(()=>{const chg=D.ens[0].mean-D.last_price;const sign=chg>=0?'+':'';return '['+D.ens[0].p10.toFixed(2)+', '+D.ens[0].p90.toFixed(2)+'] '+sign+chg.toFixed(3);})(),c:'cyan'},
   {l:'Up Probability',v:(D.ens[0].up_prob*100).toFixed(0)+'%',s:'OOS residual based',c:D.ens[0].up_prob>0.5?'green':'red'},
   {l:'RMSE vs Naive',v:ratio.toFixed(3),s:ratio<1?'beats random walk':'no edge vs RW',c:ratio<1?'green':'red'},
   {l:'OOS Dir. Acc.',v:(()=>{const all=D.oos.ensemble.da!=null?(D.oos.ensemble.da*100).toFixed(0)+'%':'—';const tr=D.pnl&&D.pnl.hit!=null?(D.pnl.hit*100).toFixed(0)+'%':'—';return all+' / '+tr;})(),s:'全期間 / 取引日',c:'blue'},
