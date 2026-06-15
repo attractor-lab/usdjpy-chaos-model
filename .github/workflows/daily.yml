@@ -1,38 +1,50 @@
-name: Daily Model Update
+name: Daily USD/JPY Update
 
 on:
-#  schedule:
-    # 日本時間：毎週月〜金の朝9:07（UTC 0:07）に自動実行
-#    - cron: '7 0 * * 1-5'
-  workflow_dispatch:
+  # schedule:
+    # 23:00 UTC = 8:00 JST (夏時間: NY close ~22:00 UTC の1時間後)
+    # 冬時間は NY close が 23:00 UTC なので直後に相当
+    # - cron: '0 23 * * 1-5'
+  workflow_dispatch:  # 手動実行も可能
+    inputs:
+      realtime:
+        description: 'リアルタイムモード（NYクローズ直前 5:45頃に実行する場合はON）'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   update:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install numpy scipy yfinance pandas cot-reports
+        run: pip install -r requirements.txt
 
-      - name: Run model
-        run: python upgrade.py
-
-      - name: Commit and push updated HTML
+      - name: Run model (public build)
         run: |
-          git config user.name "github-actions[bot]"
+          if [ "${{ github.event.inputs.realtime }}" = "true" ]; then
+            python upgrade.py --realtime
+          else
+            python upgrade.py
+          fi
+
+      - name: Commit and push docs
+        run: |
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/index.html
-          git diff --staged --quiet || git commit -m "chore: update $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "chore: daily update $(date -u '+%Y-%m-%d %H:%M UTC')"
           git push
