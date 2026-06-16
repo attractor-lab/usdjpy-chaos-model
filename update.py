@@ -1469,14 +1469,17 @@ new Chart(document.getElementById('c0'),{
       callbacks:{
         label:ctx=>{
           if(!ctx.dataset.label||ctx.parsed.y==null)return null;
-          if(ctx.dataset.label==='Actual'){
-            return '終値: ¥'+ctx.parsed.y.toFixed(2);
+          const i=ctx.dataIndex;
+          const isPast=actData[i]!=null;
+          if(isPast){
+            return ctx.dataset.label==='Actual'?'終値: ¥'+ctx.parsed.y.toFixed(2):null;
           }
-          return ctx.dataset.label+': ¥'+ctx.parsed.y.toFixed(2);
+          return ctx.dataset.label==='Actual'?null:ctx.dataset.label+': ¥'+ctx.parsed.y.toFixed(2);
         },
         afterBody:items=>{
           if(!items.length)return[];
           const i=items[0].dataIndex;
+          if(actData[i]!=null)return[];
           const out=[];
           if(p10[i]!=null&&p90[i]!=null)out.push('P10–90: ¥'+p10[i].toFixed(2)+' – ¥'+p90[i].toFixed(2));
           if(p25[i]!=null&&p75[i]!=null)out.push('P25–75: ¥'+p25[i].toFixed(2)+' – ¥'+p75[i].toFixed(2));
