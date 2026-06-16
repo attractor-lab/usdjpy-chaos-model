@@ -67,7 +67,7 @@ KNN_CONSENSUS_THRESH = 0.60   # 60%以上の近傍が同方向なら取引
 
 # --- ローリング方向一致率(DA)モニタリング ---
 # ダッシュボードにWARNING/STOPバッジを表示してモデル劣化を検知
-USE_DA_MONITOR    = False   # True: 監視バッジを有効化 / False: 非表示
+USE_DA_MONITOR    = True   # True: 監視バッジを有効化 / False: 非表示
 DA_MONITOR_WINDOW = 60     # ローリング窓(営業日)
 DA_MONITOR_WARN   = 0.45   # WARNINGライン: この値以下がN日続いたら黄色バッジ
 DA_MONITOR_STOP   = 0.40   # STOPライン  : この値以下がN日続いたら赤バッジ
@@ -108,11 +108,11 @@ AR_ORDER      = 5      # AR次数
 # --- v3.3: Hurstベースポジションサイジング ---
 # Hurst高 → トレンド持続性あり → 同方向でサイズ増
 # Hurst低 → 確信度低/平均回帰的 → サイズ縮小（逆張りはしない）
-USE_HURST_SIZING  = True  # True = Hurstスケーリング有効。Falseで従来通り
+USE_HURST_SIZING  = False  # True = Hurstスケーリング有効。Falseで従来通り
 HURST_HIGH        = 0.55   # 以上: サイズ増（トレンド相場）
 HURST_LOW         = 0.45   # 未満: サイズ縮小（低確信度）
 HURST_HIGH_MULT   = 1.5    # トレンド相場のポジション倍率
-HURST_LOW_MULT    = 1   # 低確信度のポジション倍率（マイナス=逆張り）
+HURST_LOW_MULT    = -0.5   # 低確信度のポジション倍率（マイナス=逆張り）
 
 REGIME_NAMES = ["Low Vol Range", "High Vol Range",
                 "Bull Trend", "Bear Trend", "Unstable"]
@@ -1468,7 +1468,10 @@ new Chart(document.getElementById('c0'),{
     plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,
       callbacks:{
         label:ctx=>{
-          if(!ctx.dataset.label||ctx.dataset.label==='Actual'||ctx.parsed.y==null)return null;
+          if(!ctx.dataset.label||ctx.parsed.y==null)return null;
+          if(ctx.dataset.label==='Actual'){
+            return '終値: ¥'+ctx.parsed.y.toFixed(2);
+          }
           return ctx.dataset.label+': ¥'+ctx.parsed.y.toFixed(2);
         },
         afterBody:items=>{
