@@ -216,7 +216,7 @@ def fetch_usdjpy_alphavantage(api_key):
     無料キー取得: https://www.alphavantage.co/support/#api-key
     GitHub Secrets に AV_API_KEY として登録すること
     """
-    import urllib.request, json as _json
+    import urllib.request, json as _json, datetime as _dt
     from datetime import date as _date
     today_str = _date.today().strftime("%Y-%m-%d")
     url = (f"https://www.alphavantage.co/query?function=FX_DAILY"
@@ -228,13 +228,20 @@ def fetch_usdjpy_alphavantage(api_key):
         err = data.get("Note") or data.get("Information") or str(data)[:200]
         raise ValueError(f"Alpha Vantage エラー: {err}")
     ts = data["Time Series FX (Daily)"]
-    rows = sorted([(d, float(v["4. close"])) for d, v in ts.items() if d < today_str])
+    # 週末除外（土=5, 日=6）・当日除外
+    rows = sorted([
+        (d, float(v["4. close"])) for d, v in ts.items()
+        if d < today_str and _dt.date.fromisoformat(d).weekday() < 5
+    ])
     if len(rows) < 800:
         raise ValueError(f"Alpha Vantage データ不足: {len(rows)}件")
     dates  = [r[0].replace("-", "/") for r in rows]
     closes = np.array([r[1] for r in rows])
     _sanity_check(closes)
     print(f"[OK] Alpha Vantage: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+    # 直近5日の価格をデバッグ出力（Yahoo!ファイナンスJPと比較用）
+    for d, c in rows[-5:]:
+        print(f"  [DEBUG] {d}: {c:.3f}")
     return dates, closes
 
 def fetch_usdjpy_yfticker():
@@ -248,9 +255,9 @@ def fetch_usdjpy_yfticker():
     ticker = yf.Ticker("USDJPY=X")
     df = ticker.history(start="2014-01-01", end=today_str, interval="1d", auto_adjust=False)
     df = df.dropna(subset=["Close"])
-    # タイムゾーン付きインデックスをnaiveに変換
+    # タイムゾーン付きインデックスをnaiveに変換（tz_localize(None)はtz-awareに使えないためtz_convert）
     if hasattr(df.index, 'tz') and df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
+        df.index = df.index.tz_convert(None)
     df = df[df.index.strftime("%Y-%m-%d") < today_str]
     if len(df) < 800:
         raise ValueError(f"データ不足: {len(df)}件")
@@ -258,6 +265,8 @@ def fetch_usdjpy_yfticker():
     dates  = [d.strftime("%Y/%m/%d") for d in df.index]
     _sanity_check(closes)
     print(f"[OK] yfinance Ticker: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+    for d, c in zip(dates[-5:], closes[-5:]):
+        print(f"  [DEBUG] {d}: {c:.3f}")
     return dates, closes
 
 def _fetch_yf_series(ticker, dates, fallback, scale=1.0, label=""):
