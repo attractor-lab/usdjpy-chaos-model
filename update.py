@@ -121,30 +121,35 @@ REGIME_NAMES = ["Low Vol Range", "High Vol Range",
 # 1. データ取得
 # ============================================================
 def fetch_usdjpy():
+    # stooqをプライマリ（データ精度がyfinance USより高い）
+    try:
+        d, c = fetch_usdjpy_stooq()
+        return d, c, "stooq"
+    except Exception as e:
+        print(f"[WARN] stooq 失敗: {e}")
+    # フォールバック: yfinance
     try:
         import yfinance as yf
         from datetime import date as _date
         today_str = _date.today().strftime("%Y-%m-%d")
-        # 固定開始日 → 実行タイミングによるデータ件数ブレを防ぐ
         df = yf.download("USDJPY=X", start="2014-01-01", end=today_str,
                          interval="1d", progress=False, auto_adjust=True)
         df = df.dropna()
-        # 当日の未完成足を除外 → 実行時刻に関わらず常に前日終値を使う
         df = df[df.index.strftime("%Y-%m-%d") < today_str]
         if len(df) < 800:
             raise ValueError("データ不足")
         closes = df["Close"].values.flatten().astype(float)
         dates  = [d.strftime("%Y/%m/%d") for d in df.index]
         _sanity_check(closes)
-        print(f"[OK] yfinance: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+        print(f"[OK] yfinance(fallback): {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
         return dates, closes, "yfinance"
     except Exception as e:
-        print(f"[WARN] yfinance 失敗: {e}")
-        d, c = fetch_usdjpy_stooq()
-        return d, c, "stooq"
+        raise RuntimeError(f"stooq・yfinance両方失敗: {e}")
 
 def fetch_usdjpy_stooq():
     import urllib.request, csv, io
+    from datetime import date as _date
+    today_str = _date.today().strftime("%Y-%m-%d")
     url = "https://stooq.com/q/d/l/?s=usdjpy&i=d"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -152,6 +157,8 @@ def fetch_usdjpy_stooq():
     rows = [r for r in csv.reader(io.StringIO(raw))
             if len(r) >= 5 and r[4] not in ("", "null", "Close")]
     rows.sort(key=lambda r: r[0])
+    # 当日の未完成足を除外
+    rows = [r for r in rows if r[0] < today_str]
     dates  = [r[0].replace("-", "/") for r in rows]
     closes = np.array([float(r[4]) for r in rows])
     _sanity_check(closes)
