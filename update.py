@@ -133,24 +133,37 @@ def fetch_usdjpy():
         return d, c, "stooq"
     except Exception as e:
         print(f"[WARN] stooq 失敗: {e}")
-    # ③yfinance（最終手段）
+    # ③Alpha Vantage（AV_API_KEY環境変数がセットされている場合）
+    # GitHub Secrets に AV_API_KEY を追加すると自動で有効化。無料キー: https://www.alphavantage.co/support/#api-key
+    av_key = os.environ.get("AV_API_KEY", "")
+    if av_key:
+        try:
+            d, c = fetch_usdjpy_alphavantage(av_key)
+            return d, c, "AlphaVantage"
+        except Exception as e:
+            print(f"[WARN] Alpha Vantage 失敗: {e}")
+    # ④yfinance Ticker.history()（v8 APIエンドポイント、download()と異なるデータを返すことがある）
+    try:
+        d, c = fetch_usdjpy_yfticker()
+        return d, c, "yfinance"
+    except Exception as e:
+        print(f"[WARN] yfinance Ticker 失敗: {e}")
+    # ⑤yfinance download（最終手段）
     try:
         import yfinance as yf
         from datetime import date as _date
         today_str = _date.today().strftime("%Y-%m-%d")
-        # auto_adjust=Falseでraw終値を取得（為替には調整不要）
         df = yf.download("USDJPY=X", start="2014-01-01", end=today_str,
                          interval="1d", progress=False, auto_adjust=False)
         df = df.dropna()
         df = df[df.index.strftime("%Y-%m-%d") < today_str]
         if len(df) < 800:
             raise ValueError("データ不足")
-        # auto_adjust=Falseの場合Closeカラムを明示的に取得
         close_col = df["Close"] if "Close" in df.columns else df["Adj Close"]
         closes = close_col.values.flatten().astype(float)
         dates  = [d.strftime("%Y/%m/%d") for d in df.index]
         _sanity_check(closes)
-        print(f"[OK] yfinance(fallback): {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+        print(f"[OK] yfinance download(fallback): {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
         return dates, closes, "yfinance"
     except Exception as e:
         raise RuntimeError(f"全ソース失敗: {e}")
@@ -196,6 +209,55 @@ def fetch_usdjpy_stooq():
     closes = np.array([float(r[4]) for r in rows])
     _sanity_check(closes)
     print(f"[OK] stooq: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+    return dates, closes
+
+def fetch_usdjpy_alphavantage(api_key):
+    """Alpha Vantage FX_DAILY: 精度の高いFXヒストリカルデータ
+    無料キー取得: https://www.alphavantage.co/support/#api-key
+    GitHub Secrets に AV_API_KEY として登録すること
+    """
+    import urllib.request, json as _json
+    from datetime import date as _date
+    today_str = _date.today().strftime("%Y-%m-%d")
+    url = (f"https://www.alphavantage.co/query?function=FX_DAILY"
+           f"&from_symbol=USD&to_symbol=JPY&outputsize=full&apikey={api_key}")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = _json.loads(r.read().decode("utf-8"))
+    if "Time Series FX (Daily)" not in data:
+        err = data.get("Note") or data.get("Information") or str(data)[:200]
+        raise ValueError(f"Alpha Vantage エラー: {err}")
+    ts = data["Time Series FX (Daily)"]
+    rows = sorted([(d, float(v["4. close"])) for d, v in ts.items() if d < today_str])
+    if len(rows) < 800:
+        raise ValueError(f"Alpha Vantage データ不足: {len(rows)}件")
+    dates  = [r[0].replace("-", "/") for r in rows]
+    closes = np.array([r[1] for r in rows])
+    _sanity_check(closes)
+    print(f"[OK] Alpha Vantage: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+    return dates, closes
+
+def fetch_usdjpy_yfticker():
+    """yfinance Ticker.history() - v8 APIエンドポイント
+    yf.download()（v7 API）と異なるタイムゾーン処理を行うため、
+    より東京時間寄りの終値を返す可能性がある。
+    """
+    import yfinance as yf
+    from datetime import date as _date
+    today_str = _date.today().strftime("%Y-%m-%d")
+    ticker = yf.Ticker("USDJPY=X")
+    df = ticker.history(start="2014-01-01", end=today_str, interval="1d", auto_adjust=False)
+    df = df.dropna(subset=["Close"])
+    # タイムゾーン付きインデックスをnaiveに変換
+    if hasattr(df.index, 'tz') and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+    df = df[df.index.strftime("%Y-%m-%d") < today_str]
+    if len(df) < 800:
+        raise ValueError(f"データ不足: {len(df)}件")
+    closes = df["Close"].values.flatten().astype(float)
+    dates  = [d.strftime("%Y/%m/%d") for d in df.index]
+    _sanity_check(closes)
+    print(f"[OK] yfinance Ticker: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
     return dates, closes
 
 def _fetch_yf_series(ticker, dates, fallback, scale=1.0, label=""):
