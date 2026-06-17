@@ -121,13 +121,19 @@ REGIME_NAMES = ["Low Vol Range", "High Vol Range",
 # 1. データ取得
 # ============================================================
 def fetch_usdjpy():
-    # stooqをプライマリ（データ精度がyfinance USより高い）
+    # ①FRED（Federal Reserve公式・最高品質）
+    try:
+        d, c = fetch_usdjpy_fred()
+        return d, c, "FRED"
+    except Exception as e:
+        print(f"[WARN] FRED 失敗: {e}")
+    # ②stooq
     try:
         d, c = fetch_usdjpy_stooq()
         return d, c, "stooq"
     except Exception as e:
         print(f"[WARN] stooq 失敗: {e}")
-    # フォールバック: yfinance
+    # ③yfinance（最終手段）
     try:
         import yfinance as yf
         from datetime import date as _date
@@ -144,7 +150,31 @@ def fetch_usdjpy():
         print(f"[OK] yfinance(fallback): {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
         return dates, closes, "yfinance"
     except Exception as e:
-        raise RuntimeError(f"stooq・yfinance両方失敗: {e}")
+        raise RuntimeError(f"全ソース失敗: {e}")
+
+def fetch_usdjpy_fred():
+    """FRED DEXJPUS: 米連邦準備銀行公式のUSDJPY日次レート（APIキー不要）"""
+    import urllib.request, csv, io
+    from datetime import date as _date
+    today_str = _date.today().strftime("%Y-%m-%d")
+    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXJPUS"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read().decode("utf-8")
+    rows = []
+    for row in csv.reader(io.StringIO(raw)):
+        if len(row) < 2 or row[0] == "DATE" or row[1] == ".":
+            continue
+        if row[0] >= today_str:
+            continue
+        rows.append(row)
+    if len(rows) < 800:
+        raise ValueError(f"FRED データ不足: {len(rows)}件")
+    dates  = [r[0].replace("-", "/") for r in rows]
+    closes = np.array([float(r[1]) for r in rows])
+    _sanity_check(closes)
+    print(f"[OK] FRED: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+    return dates, closes
 
 def fetch_usdjpy_stooq():
     import urllib.request, csv, io
