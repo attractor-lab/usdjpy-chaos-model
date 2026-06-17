@@ -1,6 +1,11 @@
 """
 ORBIT — Regime-Adaptive Analog Ensemble (Attractor Co., Ltd.)
-USD/JPY アンサンブル予測モデル v3 — 方法論改善版
+USD/JPY アンサンブル予測モデル v3 — 始値(Open)ベース版
+
+【このファイルについて】
+OPEN/ フォルダ版: Close価格の代わりにOpen価格を使用。
+「今日の始値で明日の始値を予測する」モデル。
+終値版との比較バックテスト用。
 
 v2からの主な改善(すべて日次自動更新の運用前提を維持):
   1. look-ahead bias の完全排除
@@ -144,7 +149,7 @@ def fetch_usdjpy():
     raise RuntimeError("全データソース失敗: yfinance / stooq / AlphaVantage")
 
 def fetch_usdjpy_yfdl():
-    """yfinance download — プライマリソース。モデルはこの系列で学習済み。"""
+    """yfinance download — プライマリソース（始値ベースモデル）"""
     import yfinance as yf
     from datetime import date as _date
     today_str = _date.today().strftime("%Y-%m-%d")
@@ -154,12 +159,11 @@ def fetch_usdjpy_yfdl():
     df = df[df.index.strftime("%Y-%m-%d") < today_str]
     if len(df) < 800:
         raise ValueError(f"データ不足: {len(df)}件")
-    close_col = df["Close"] if "Close" in df.columns else df["Adj Close"]
-    closes = close_col.values.flatten().astype(float)
-    dates  = [d.strftime("%Y/%m/%d") for d in df.index]
-    _sanity_check(closes)
-    print(f"[OK] yfinance: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
-    return dates, closes
+    opens = df["Open"].values.flatten().astype(float)
+    dates = [d.strftime("%Y/%m/%d") for d in df.index]
+    _sanity_check(opens)
+    print(f"[OK] yfinance (Open): {len(opens)} 件 ({dates[0]} ~ {dates[-1]})")
+    return dates, opens
 
 def fetch_usdjpy_stooq():
     """stooq — GitHub Actionsからブロックされることがあるが高速なため2番手に配置"""
@@ -172,17 +176,18 @@ def fetch_usdjpy_stooq():
         raw = r.read().decode("utf-8")
     if raw.lstrip().startswith("<"):
         raise ValueError("stooq がHTMLを返した（ブロック中）")
+    # stooq CSV: Date,Open,High,Low,Close,Volume → Open は index 1
     rows = [r for r in csv.reader(io.StringIO(raw))
-            if len(r) >= 5 and r[4] not in ("", "null", "Close")]
+            if len(r) >= 5 and r[1] not in ("", "null", "Open")]
     rows.sort(key=lambda r: r[0])
     rows = [r for r in rows if r[0] < today_str]
     if len(rows) < 800:
         raise ValueError(f"データ不足: {len(rows)}件")
-    dates  = [r[0].replace("-", "/") for r in rows]
-    closes = np.array([float(r[4]) for r in rows])
-    _sanity_check(closes)
-    print(f"[OK] stooq: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
-    return dates, closes
+    dates = [r[0].replace("-", "/") for r in rows]
+    opens = np.array([float(r[1]) for r in rows])
+    _sanity_check(opens)
+    print(f"[OK] stooq (Open): {len(opens)} 件 ({dates[0]} ~ {dates[-1]})")
+    return dates, opens
 
 def fetch_usdjpy_alphavantage(api_key):
     """Alpha Vantage FX_DAILY: 精度の高いFXヒストリカルデータ
@@ -204,15 +209,15 @@ def fetch_usdjpy_alphavantage(api_key):
     # 2014-01-01以降・週末除外（土=5, 日=6）・当日除外
     # ※yfinanceと同じ開始日に揃える（GFC期2007-2013を含めるとk-NNの近傍探索が歪む）
     rows = sorted([
-        (d, float(v["4. close"])) for d, v in ts.items()
+        (d, float(v["1. open"])) for d, v in ts.items()
         if d >= "2014-01-01" and d < today_str and _dt.date.fromisoformat(d).weekday() < 5
     ])
     if len(rows) < 800:
         raise ValueError(f"Alpha Vantage データ不足: {len(rows)}件")
-    dates  = [r[0].replace("-", "/") for r in rows]
-    closes = np.array([r[1] for r in rows])
-    _sanity_check(closes)
-    print(f"[OK] Alpha Vantage: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+    dates = [r[0].replace("-", "/") for r in rows]
+    opens = np.array([r[1] for r in rows])
+    _sanity_check(opens)
+    print(f"[OK] Alpha Vantage (Open): {len(opens)} 件 ({dates[0]} ~ {dates[-1]})")
     # 直近5日の価格をデバッグ出力（Yahoo!ファイナンスJPと比較用）
     for d, c in rows[-5:]:
         print(f"  [DEBUG] {d}: {c:.3f}")
@@ -1393,9 +1398,9 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
     <div class="note" id="pnlnote"></div>
   </div>
   <div class="card">
-    <div class="card-t">Execution Lag Sensitivity &mdash; t&#x7d42;&#x5024;&#x57f7;&#x884c; vs &#x30e9;&#x30b0;1&#x65e5;</div>
+    <div class="card-t">Execution Lag Sensitivity &mdash; t始値執行 vs ラグ1日</div>
     <table id="tlag"></table>
-    <div class="note">ラグ1日 = シグナルをt-1終値で計算し、執行をt終値まで丸1日遅らせた保守的な検証。
+    <div class="note">ラグ1日 = シグナルをt-1始値で計算し、執行をt始値まで丸1日遅らせた保守的な検証。
       ラグなしとの差が小さければ執行タイミングに頑健、ラグ1日で損益が消える場合は執行速度依存のシグナル。</div>
   </div>
 </div>
@@ -1447,7 +1452,7 @@ const RN=__REGIME_NAMES__;
 const RC=['#3ddc84','#4a9eff','#f0a830','#ff6b6b','#a070ff'];
 
 document.getElementById('hprice').textContent='¥'+D.last_price.toFixed(2);
-document.getElementById('hdate').textContent=D.last_date+(D.realtime_mode?' LIVE':' Close');
+document.getElementById('hdate').textContent=D.last_date+(D.realtime_mode?' LIVE':' Open');
 const rb=document.getElementById('rbadge');
 rb.className='rbadge r'+D.current_regime;
 document.getElementById('rlabel').textContent=RN[D.current_regime];
@@ -1532,7 +1537,7 @@ new Chart(document.getElementById('c0'),{
           const i=ctx.dataIndex;
           const isPast=actData[i]!=null;
           if(isPast){
-            return ctx.dataset.label==='Actual'?'終値: ¥'+ctx.parsed.y.toFixed(2):null;
+            return ctx.dataset.label==='Actual'?'始値: ¥'+ctx.parsed.y.toFixed(2):null;
           }
           return ctx.dataset.label==='Actual'?null:ctx.dataset.label+': ¥'+ctx.parsed.y.toFixed(2);
         },
@@ -1819,7 +1824,7 @@ if(P){
     `予測変化が${P.thresh}円未満の日は見送り。PnLはすべて円建て。スリッページは未考慮。`;
   // 執行ラグ比較表
   let lh='<tr><th>Execution</th><th>Total PnL</th><th>Price</th><th>Swap</th><th>Sharpe</th><th>Hit</th></tr>';
-  [['t終値(ラグなし)',P],['t+1終値(ラグ1日)',PL]].forEach(([n,S])=>{
+  [['t始値(ラグなし)',P],['t+1始値(ラグ1日)',PL]].forEach(([n,S])=>{
     if(!S) return;
     lh+=`<tr>
       <td style="color:var(--text2)">${n}</td>
