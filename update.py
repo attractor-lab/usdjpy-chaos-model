@@ -228,10 +228,11 @@ def fetch_usdjpy_alphavantage(api_key):
         err = data.get("Note") or data.get("Information") or str(data)[:200]
         raise ValueError(f"Alpha Vantage エラー: {err}")
     ts = data["Time Series FX (Daily)"]
-    # 週末除外（土=5, 日=6）・当日除外
+    # 2014-01-01以降・週末除外（土=5, 日=6）・当日除外
+    # ※yfinanceと同じ開始日に揃える（GFC期2007-2013を含めるとk-NNの近傍探索が歪む）
     rows = sorted([
         (d, float(v["4. close"])) for d, v in ts.items()
-        if d < today_str and _dt.date.fromisoformat(d).weekday() < 5
+        if d >= "2014-01-01" and d < today_str and _dt.date.fromisoformat(d).weekday() < 5
     ])
     if len(rows) < 800:
         raise ValueError(f"Alpha Vantage データ不足: {len(rows)}件")
