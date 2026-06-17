@@ -2,16 +2,21 @@ name: Daily USD/JPY Update
 
 on:
   # schedule:
-    # 23:00 UTC = 8:00 JST (夏時間: NY close ~22:00 UTC の1時間後)
-    # 冬時間は NY close が 23:00 UTC なので直後に相当
-    # - cron: '0 23 * * 1-5'
+    # 0:30 UTC = 9:30 JST (yfinance前日終値の反映が9:00 JST頃のため、その後に実行)
+    # 火〜土に実行することで月〜金の前日終値を取得
+    # - cron: '30 0 * * 2-6'
   workflow_dispatch:  # 手動実行も可能
     inputs:
       realtime:
-        description: 'リアルタイムモード（NYクローズ直前 5:45頃に実行する場合はON）'
+        description: 'LIVEモード（現在の市場価格を取得して本日データとして追加）'
         required: false
         default: false
         type: boolean
+      price:
+        description: '仮定始値シナリオ（例: 161.50）。入力すると指定価格でLIVE予測。空欄=無効'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -36,7 +41,10 @@ jobs:
         env:
           AV_API_KEY: ${{ secrets.AV_API_KEY }}
         run: |
-          if [ "${{ github.event.inputs.realtime }}" = "true" ]; then
+          PRICE="${{ github.event.inputs.price }}"
+          if [ -n "$PRICE" ]; then
+            python upgrade.py --price "$PRICE"
+          elif [ "${{ github.event.inputs.realtime }}" = "true" ]; then
             python upgrade.py --realtime
           else
             python upgrade.py
