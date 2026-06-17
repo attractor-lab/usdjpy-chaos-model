@@ -1943,11 +1943,37 @@ def main():
     print("=== USD/JPY Ensemble v3 (causal / walk-forward) ===")
     print("Time:", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
-    realtime_mode = "--realtime" in __import__("sys").argv
+    import sys as _sys
+    _argv = _sys.argv
+    realtime_mode = "--realtime" in _argv
+
+    # --price 引数のパース（例: --price 161.50）
+    _manual_price = None
+    if "--price" in _argv:
+        _idx = _argv.index("--price")
+        if _idx + 1 < len(_argv):
+            try:
+                _manual_price = float(_argv[_idx + 1])
+                print(f"[SCENARIO] 仮定始値モード: ¥{_manual_price:.3f}")
+            except ValueError:
+                print(f"[WARN] --price の値が無効です: {_argv[_idx + 1]}")
+
     dates, prices, source = fetch_usdjpy()
 
-    # リアルタイムモード: 現在価格を今日の仮終値として末尾に追加
-    if realtime_mode:
+    # リアルタイムモード: 現在価格を今日の仮始値として末尾に追加
+    if _manual_price is not None:
+        # シナリオモード: 指定価格を今日として追加
+        from datetime import date as _date
+        today = _date.today().strftime("%Y/%m/%d")
+        if dates[-1] != today:
+            dates = dates + [today]
+            prices = np.append(prices, _manual_price)
+            print(f"[SCENARIO] ¥{_manual_price:.3f} を {today} として追加")
+        else:
+            prices = np.append(prices[:-1], _manual_price)
+            print(f"[SCENARIO] ¥{_manual_price:.3f} で本日データを上書き")
+        realtime_mode = True  # ダッシュボードに LIVE 表示させる
+    elif realtime_mode:
         try:
             import yfinance as yf
             from datetime import date as _date
