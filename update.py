@@ -121,20 +121,19 @@ REGIME_NAMES = ["Low Vol Range", "High Vol Range",
 # 1. データ取得
 # ============================================================
 def fetch_usdjpy():
-    # ①FRED（Federal Reserve公式・最高品質）
+    # ①yfinance download（プライマリ。モデルはこの系列で学習済み）
     try:
-        d, c = fetch_usdjpy_fred()
-        return d, c, "FRED"
+        d, c = fetch_usdjpy_yfdl()
+        return d, c, "yfinance"
     except Exception as e:
-        print(f"[WARN] FRED 失敗: {e}")
-    # ②stooq
+        print(f"[WARN] yfinance 失敗: {e}")
+    # ②stooq（素早くフォールバック。GitHub Actionsからはブロックされることがある）
     try:
         d, c = fetch_usdjpy_stooq()
         return d, c, "stooq"
     except Exception as e:
         print(f"[WARN] stooq 失敗: {e}")
     # ③Alpha Vantage（AV_API_KEY環境変数がセットされている場合）
-    # GitHub Secrets に AV_API_KEY を追加すると自動で有効化。無料キー: https://www.alphavantage.co/support/#api-key
     av_key = os.environ.get("AV_API_KEY", "")
     if av_key:
         try:
@@ -142,69 +141,43 @@ def fetch_usdjpy():
             return d, c, "AlphaVantage"
         except Exception as e:
             print(f"[WARN] Alpha Vantage 失敗: {e}")
-    # ④yfinance Ticker.history()（v8 APIエンドポイント、download()と異なるデータを返すことがある）
-    try:
-        d, c = fetch_usdjpy_yfticker()
-        return d, c, "yfinance"
-    except Exception as e:
-        print(f"[WARN] yfinance Ticker 失敗: {e}")
-    # ⑤yfinance download（最終手段）
-    try:
-        import yfinance as yf
-        from datetime import date as _date
-        today_str = _date.today().strftime("%Y-%m-%d")
-        df = yf.download("USDJPY=X", start="2014-01-01", end=today_str,
-                         interval="1d", progress=False, auto_adjust=False)
-        df = df.dropna()
-        df = df[df.index.strftime("%Y-%m-%d") < today_str]
-        if len(df) < 800:
-            raise ValueError("データ不足")
-        close_col = df["Close"] if "Close" in df.columns else df["Adj Close"]
-        closes = close_col.values.flatten().astype(float)
-        dates  = [d.strftime("%Y/%m/%d") for d in df.index]
-        _sanity_check(closes)
-        print(f"[OK] yfinance download(fallback): {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
-        return dates, closes, "yfinance"
-    except Exception as e:
-        raise RuntimeError(f"全ソース失敗: {e}")
+    raise RuntimeError("全データソース失敗: yfinance / stooq / AlphaVantage")
 
-def fetch_usdjpy_fred():
-    """FRED DEXJPUS: 米連邦準備銀行公式のUSDJPY日次レート（APIキー不要）"""
-    import urllib.request, csv, io
+def fetch_usdjpy_yfdl():
+    """yfinance download — プライマリソース。モデルはこの系列で学習済み。"""
+    import yfinance as yf
     from datetime import date as _date
     today_str = _date.today().strftime("%Y-%m-%d")
-    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXJPUS"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=40) as r:
-        raw = r.read().decode("utf-8")
-    rows = []
-    for row in csv.reader(io.StringIO(raw)):
-        if len(row) < 2 or row[0] == "DATE" or row[1] == ".":
-            continue
-        if row[0] >= today_str:
-            continue
-        rows.append(row)
-    if len(rows) < 800:
-        raise ValueError(f"FRED データ不足: {len(rows)}件")
-    dates  = [r[0].replace("-", "/") for r in rows]
-    closes = np.array([float(r[1]) for r in rows])
+    df = yf.download("USDJPY=X", start="2014-01-01", end=today_str,
+                     interval="1d", progress=False, auto_adjust=False)
+    df = df.dropna()
+    df = df[df.index.strftime("%Y-%m-%d") < today_str]
+    if len(df) < 800:
+        raise ValueError(f"データ不足: {len(df)}件")
+    close_col = df["Close"] if "Close" in df.columns else df["Adj Close"]
+    closes = close_col.values.flatten().astype(float)
+    dates  = [d.strftime("%Y/%m/%d") for d in df.index]
     _sanity_check(closes)
-    print(f"[OK] FRED: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
+    print(f"[OK] yfinance: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
     return dates, closes
 
 def fetch_usdjpy_stooq():
+    """stooq — GitHub Actionsからブロックされることがあるが高速なため2番手に配置"""
     import urllib.request, csv, io
     from datetime import date as _date
     today_str = _date.today().strftime("%Y-%m-%d")
     url = "https://stooq.com/q/d/l/?s=usdjpy&i=d"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=8) as r:   # 短めに設定（ブロック時の即断）
         raw = r.read().decode("utf-8")
+    if raw.lstrip().startswith("<"):
+        raise ValueError("stooq がHTMLを返した（ブロック中）")
     rows = [r for r in csv.reader(io.StringIO(raw))
             if len(r) >= 5 and r[4] not in ("", "null", "Close")]
     rows.sort(key=lambda r: r[0])
-    # 当日の未完成足を除外
     rows = [r for r in rows if r[0] < today_str]
+    if len(rows) < 800:
+        raise ValueError(f"データ不足: {len(rows)}件")
     dates  = [r[0].replace("-", "/") for r in rows]
     closes = np.array([float(r[4]) for r in rows])
     _sanity_check(closes)
@@ -242,31 +215,6 @@ def fetch_usdjpy_alphavantage(api_key):
     print(f"[OK] Alpha Vantage: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
     # 直近5日の価格をデバッグ出力（Yahoo!ファイナンスJPと比較用）
     for d, c in rows[-5:]:
-        print(f"  [DEBUG] {d}: {c:.3f}")
-    return dates, closes
-
-def fetch_usdjpy_yfticker():
-    """yfinance Ticker.history() - v8 APIエンドポイント
-    yf.download()（v7 API）と異なるタイムゾーン処理を行うため、
-    より東京時間寄りの終値を返す可能性がある。
-    """
-    import yfinance as yf
-    from datetime import date as _date
-    today_str = _date.today().strftime("%Y-%m-%d")
-    ticker = yf.Ticker("USDJPY=X")
-    df = ticker.history(start="2014-01-01", end=today_str, interval="1d", auto_adjust=False)
-    df = df.dropna(subset=["Close"])
-    # タイムゾーン付きインデックスをnaiveに変換（tz_localize(None)はtz-awareに使えないためtz_convert）
-    if hasattr(df.index, 'tz') and df.index.tz is not None:
-        df.index = df.index.tz_convert(None)
-    df = df[df.index.strftime("%Y-%m-%d") < today_str]
-    if len(df) < 800:
-        raise ValueError(f"データ不足: {len(df)}件")
-    closes = df["Close"].values.flatten().astype(float)
-    dates  = [d.strftime("%Y/%m/%d") for d in df.index]
-    _sanity_check(closes)
-    print(f"[OK] yfinance Ticker: {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
-    for d, c in zip(dates[-5:], closes[-5:]):
         print(f"  [DEBUG] {d}: {c:.3f}")
     return dates, closes
 
