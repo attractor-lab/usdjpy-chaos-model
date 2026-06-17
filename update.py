@@ -67,7 +67,7 @@ KNN_CONSENSUS_THRESH = 0.60   # 60%以上の近傍が同方向なら取引
 
 # --- ローリング方向一致率(DA)モニタリング ---
 # ダッシュボードにWARNING/STOPバッジを表示してモデル劣化を検知
-USE_DA_MONITOR    = False   # True: 監視バッジを有効化 / False: 非表示
+USE_DA_MONITOR    = True   # True: 監視バッジを有効化 / False: 非表示
 DA_MONITOR_WINDOW = 60     # ローリング窓(営業日)
 DA_MONITOR_WARN   = 0.45   # WARNINGライン: この値以下がN日続いたら黄色バッジ
 DA_MONITOR_STOP   = 0.40   # STOPライン  : この値以下がN日続いたら赤バッジ
@@ -108,11 +108,11 @@ AR_ORDER      = 5      # AR次数
 # --- v3.3: Hurstベースポジションサイジング ---
 # Hurst高 → トレンド持続性あり → 同方向でサイズ増
 # Hurst低 → 確信度低/平均回帰的 → サイズ縮小（逆張りはしない）
-USE_HURST_SIZING  = True  # True = Hurstスケーリング有効。Falseで従来通り
+USE_HURST_SIZING  = False  # True = Hurstスケーリング有効。Falseで従来通り
 HURST_HIGH        = 0.55   # 以上: サイズ増（トレンド相場）
 HURST_LOW         = 0.45   # 未満: サイズ縮小（低確信度）
 HURST_HIGH_MULT   = 1.5    # トレンド相場のポジション倍率
-HURST_LOW_MULT    = 1   # 低確信度のポジション倍率（マイナス=逆張り）
+HURST_LOW_MULT    = -0.5   # 低確信度のポジション倍率（マイナス=逆張り）
 
 REGIME_NAMES = ["Low Vol Range", "High Vol Range",
                 "Bull Trend", "Bear Trend", "Unstable"]
@@ -138,13 +138,16 @@ def fetch_usdjpy():
         import yfinance as yf
         from datetime import date as _date
         today_str = _date.today().strftime("%Y-%m-%d")
+        # auto_adjust=Falseでraw終値を取得（為替には調整不要）
         df = yf.download("USDJPY=X", start="2014-01-01", end=today_str,
-                         interval="1d", progress=False, auto_adjust=True)
+                         interval="1d", progress=False, auto_adjust=False)
         df = df.dropna()
         df = df[df.index.strftime("%Y-%m-%d") < today_str]
         if len(df) < 800:
             raise ValueError("データ不足")
-        closes = df["Close"].values.flatten().astype(float)
+        # auto_adjust=Falseの場合Closeカラムを明示的に取得
+        close_col = df["Close"] if "Close" in df.columns else df["Adj Close"]
+        closes = close_col.values.flatten().astype(float)
         dates  = [d.strftime("%Y/%m/%d") for d in df.index]
         _sanity_check(closes)
         print(f"[OK] yfinance(fallback): {len(closes)} 件 ({dates[0]} ~ {dates[-1]})")
@@ -159,7 +162,7 @@ def fetch_usdjpy_fred():
     today_str = _date.today().strftime("%Y-%m-%d")
     url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXJPUS"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with urllib.request.urlopen(req, timeout=40) as r:
         raw = r.read().decode("utf-8")
     rows = []
     for row in csv.reader(io.StringIO(raw)):
